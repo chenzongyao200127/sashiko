@@ -31,6 +31,19 @@ pub struct ServerSettings {
     pub port: u16,
 }
 
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum IngestionMode {
+    Nntp,
+    LocalArchive,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(unused)]
+pub struct ArchiveSettings {
+    pub path: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[allow(unused)]
 pub struct Settings {
@@ -38,6 +51,14 @@ pub struct Settings {
     pub nntp: NntpSettings,
     pub ai: AiSettings,
     pub server: ServerSettings,
+    pub ingestion: IngestorSettings,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(unused)]
+pub struct IngestorSettings {
+    pub mode: IngestionMode,
+    pub archive: Option<ArchiveSettings>,
 }
 
 impl Settings {

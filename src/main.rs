@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Settings: {:?}", settings);
 
     // Initialize Database
-    let db = Database::new(settings.database).await?;
+    let db = Database::new(&settings.database).await?;
     db.migrate().await?;
 
     // Create internal task queue
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Start Ingestor
-    let ingestor = Ingestor::new(settings.nntp, db, tx);
+    let ingestor = Ingestor::new(settings, db, tx);
     tokio::spawn(async move {
         if let Err(e) = ingestor.run().await {
             error!("Ingestor fatal error: {}", e);

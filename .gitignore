@@ -4,4 +4,4 @@ Cargo.lock
 *.db
 *.db-journal
 *.db-wal
-*.db-shm
+*.db-shmarchives/

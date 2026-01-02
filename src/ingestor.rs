@@ -1,20 +1,20 @@
 use crate::db::Database;
 use crate::events::Event;
 use crate::nntp::NntpClient;
-use crate::settings::NntpSettings;
-use anyhow::Result;
+use crate::settings::{IngestionMode, Settings};
+use anyhow::{anyhow, Result};
 use tokio::sync::mpsc::Sender;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
 
 pub struct Ingestor {
-    settings: NntpSettings,
+    settings: Settings,
     db: Database,
     sender: Sender<Event>,
 }
 
 impl Ingestor {
-    pub fn new(settings: NntpSettings, db: Database, sender: Sender<Event>) -> Self {
+    pub fn new(settings: Settings, db: Database, sender: Sender<Event>) -> Self {
         Self {
             settings,
             db,
@@ -23,25 +23,30 @@ impl Ingestor {
     }
 
     pub async fn run(&self) -> Result<()> {
+        match self.settings.ingestion.mode {
+            IngestionMode::Nntp => self.run_nntp().await,
+            IngestionMode::LocalArchive => self.run_local_archive().await,
+        }
+    }
+
+    async fn run_nntp(&self) -> Result<()> {
         info!(
             "Starting NNTP Ingestor for groups: {:?}",
-            self.settings.groups
+            self.settings.nntp.groups
         );
 
         loop {
-            if let Err(e) = self.process_cycle().await {
-                error!("Ingestion cycle failed: {}", e);
+            if let Err(e) = self.process_nntp_cycle().await {
+                error!("NNTP Ingestion cycle failed: {}", e);
             }
-            // Poll every 60 seconds for now
             sleep(Duration::from_secs(60)).await;
         }
     }
 
-    async fn process_cycle(&self) -> Result<()> {
-        let mut client = NntpClient::connect(&self.settings.server, self.settings.port).await?;
+    async fn process_nntp_cycle(&self) -> Result<()> {
+        let mut client = NntpClient::connect(&self.settings.nntp.server, self.settings.nntp.port).await?;
 
-        for group_name in &self.settings.groups {
-            // Ensure group exists in DB
+        for group_name in &self.settings.nntp.groups {
             self.db.ensure_mailing_list(group_name, group_name).await?;
 
             let info = client.group(group_name).await?;
@@ -54,7 +59,6 @@ impl Ingestor {
 
             let mut current = last_known;
             if current == 0 && info.high > 0 {
-                // First run: jump to near the end to avoid fetching millions of articles
                 current = info.high.saturating_sub(5);
                 self.db.update_last_article_num(group_name, current).await?;
                 info!("Initialized high-water mark to {}", current);
@@ -77,14 +81,26 @@ impl Ingestor {
                     }
                     Err(e) => {
                         error!("Failed to fetch article {}: {}", next_id, e);
-                        // If it's a 423 (no such article number in group) we might need to skip?
-                        // For now just log error.
                     }
                 }
             }
         }
 
         client.quit().await?;
+        Ok(())
+    }
+
+    async fn run_local_archive(&self) -> Result<()> {
+        let archive_settings = self.settings.ingestion.archive.as_ref()
+            .ok_or_else(|| anyhow!("LocalArchive mode selected but no archive path provided"))?;
+        
+        info!("Starting Local Archive Ingestor from {:?}", archive_settings.path);
+
+        // Placeholder for local archive ingestion logic
+        // 1. Walk the directory or open git repo
+        // 2. Parse emails
+        // 3. Send events
+        
         Ok(())
     }
 }
