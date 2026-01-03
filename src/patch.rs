@@ -231,6 +231,19 @@ mod tests {
     }
 
     #[test]
+    fn test_version_parsing() {
+        assert_eq!(parse_subject_version("[PATCH v2] subject"), Some(2));
+        assert_eq!(parse_subject_version("[PATCH v3 1/2] subject"), Some(3));
+        assert_eq!(parse_subject_version("[PATCH] subject"), None); // v1 implicit
+        assert_eq!(parse_subject_version("[RFC v4] subject"), Some(4));
+        assert_eq!(parse_subject_version("[PATCH -v2] subject"), Some(2));
+        assert_eq!(parse_subject_version("Subject with v2 inside"), Some(2));
+        assert_eq!(parse_subject_version("Subject with devicetree"), None); // 'dev' should not match
+        assert_eq!(parse_subject_version("[PATCH 0/10]"), None); // 0/10 is not version
+        assert_eq!(parse_subject_version("[PATCH v12]"), Some(12));
+    }
+
+    #[test]
     fn test_complex_prefix_parsing() {
         let subject = "[PATCH v2 net-next 02/14] Something";
         let (index, total) = parse_subject_index(subject);
