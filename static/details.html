@@ -41,7 +41,7 @@
 
             try {
                 // The ID is passed as message_id, which might contain characters needing encoding
-                const res = await fetch(`/api/patch/${encodeURIComponent(id)}`);
+                const res = await fetch(`/api/patch?id=${encodeURIComponent(id)}`);
                 if (!res.ok) {
                     const text = await res.text();
                     throw new Error(`${res.status} ${res.statusText}: ${text}`);
