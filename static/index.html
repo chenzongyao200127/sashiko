@@ -102,7 +102,9 @@
             items.forEach(p => {
                 const row = document.createElement('tr');
                 const date = new Date(p.date * 1000).toISOString().split('T')[0];
-                const parts = `${p.received_parts || 0}/${p.total_parts || 0}`;
+                const parts = (p.received_parts === p.total_parts && p.total_parts > 0)
+                    ? `${p.total_parts}`
+                    : `${p.received_parts || 0}/${p.total_parts || 0}`;
                 
                 // Click handler for row
                 row.onclick = (e) => {
