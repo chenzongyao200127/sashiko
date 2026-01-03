@@ -84,6 +84,15 @@
             data.forEach(p => {
                 const row = document.createElement('tr');
                 const date = new Date(p.date * 1000).toISOString().split('T')[0];
+                
+                // Click handler for row
+                row.onclick = (e) => {
+                    // Don't navigate if clicking the copy button
+                    if (e.target.closest('.copy-btn')) return;
+                    window.location.href = `/static/details.html?id=${encodeURIComponent(p.message_id)}`;
+                };
+                row.style.cursor = 'pointer';
+
                 row.innerHTML = `
                     <td>${p.subject || '(no subject)'}</td>
                     <td>${p.author || 'unknown'}</td>

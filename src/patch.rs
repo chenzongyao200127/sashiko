@@ -14,6 +14,8 @@ pub struct PatchsetMetadata {
     pub references: Vec<String>,
     pub index: u32,
     pub total: u32,
+    pub to: String,
+    pub cc: String,
 }
 
 #[derive(Debug)]
@@ -53,6 +55,26 @@ pub fn parse_email(raw_email: &[u8]) -> Result<(PatchsetMetadata, Option<Patch>)
 
     let date = message.date().map(|d| d.to_timestamp()).unwrap_or(0);
 
+    let to = message
+        .to()
+        .map(|addr| {
+            addr.iter()
+                .map(|a| a.address().unwrap_or("").to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+
+    let cc = message
+        .cc()
+        .map(|addr| {
+            addr.iter()
+                .map(|a| a.address().unwrap_or("").to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+
     let in_reply_to = match message.in_reply_to() {
         HeaderValue::Text(t) => Some(t.to_string()),
         HeaderValue::TextList(l) => l.first().map(|s| s.to_string()),
@@ -84,6 +106,8 @@ pub fn parse_email(raw_email: &[u8]) -> Result<(PatchsetMetadata, Option<Patch>)
         references,
         index,
         total,
+        to,
+        cc,
     };
 
     let patch = if !diff.is_empty() {

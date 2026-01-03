@@ -29,32 +29,42 @@ pub async fn run_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(AppState { db });
 
-    let app = Router::new()
-        .route("/api/patchsets", get(list_patchsets))
-        .route("/api/stats", get(get_stats))
-        .route("/", get_service(ServeFile::new("static/index.html")))
-        .nest_service("/static", ServeDir::new("static"))
-        .with_state(state);
-
-    let addr = SocketAddr::from(([0, 0, 0, 0], settings.port));
-    info!("Web API listening on {}", addr);
-
-    let listener = TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-
-    Ok(())
-}
-
-async fn list_patchsets(
-    State(state): State<Arc<AppState>>,
-    Query(pagination): Query<Pagination>,
-) -> Result<Json<Vec<crate::db::PatchsetRow>>, StatusCode> {
-    let page = pagination.page.unwrap_or(1).max(1);
-    let per_page = pagination.per_page.unwrap_or(50).clamp(1, 100);
-    let offset = (page - 1) * per_page;
-
-    match state.db.get_patchsets(per_page, offset).await {
-        Ok(patchsets) => Ok(Json(patchsets)),
+            let app = Router::new()
+                .route("/api/patchsets", get(list_patchsets))
+                .route("/api/patch/{id}", get(get_patchset))
+                .route("/api/stats", get(get_stats))
+                .route("/", get_service(ServeFile::new("static/index.html")))            .nest_service("/static", ServeDir::new("static"))
+            .with_state(state);
+    
+        let addr = SocketAddr::from(([0, 0, 0, 0], settings.port));
+        info!("Web API listening on {}", addr);
+    
+        let listener = TcpListener::bind(addr).await?;
+        axum::serve(listener, app).await?;
+    
+        Ok(())
+    }
+    
+    async fn list_patchsets(
+        State(state): State<Arc<AppState>>,
+        Query(pagination): Query<Pagination>,
+    ) -> Result<Json<Vec<crate::db::PatchsetRow>>, StatusCode> {
+        let page = pagination.page.unwrap_or(1).max(1);
+        let per_page = pagination.per_page.unwrap_or(50).clamp(1, 100);
+        let offset = (page - 1) * per_page;
+    
+        match state.db.get_patchsets(per_page, offset).await {
+            Ok(patchsets) => Ok(Json(patchsets)),
+            Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        }
+    }
+    
+    async fn get_patchset(
+        State(state): State<Arc<AppState>>,
+        axum::extract::Path(id): axum::extract::Path<String>,
+    ) -> Result<Json<serde_json::Value>, StatusCode> {
+        match state.db.get_patchset_details(&id).await {        Ok(Some(details)) => Ok(Json(details)),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }

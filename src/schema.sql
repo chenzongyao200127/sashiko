@@ -14,7 +14,11 @@ CREATE TABLE IF NOT EXISTS patchsets (
     total_parts INTEGER,
     received_parts INTEGER,
     status TEXT DEFAULT 'Pending', -- Pending, Assembled, Applied, Failed, Reviewed
-    parser_version INTEGER DEFAULT 0
+    parser_version INTEGER DEFAULT 0,
+    to_recipients TEXT,
+    cc_recipients TEXT,
+    baseline_id INTEGER,
+    FOREIGN KEY(baseline_id) REFERENCES baselines(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_patchsets_date ON patchsets(date);
@@ -31,7 +35,7 @@ CREATE TABLE IF NOT EXISTS patches (
 
 CREATE TABLE IF NOT EXISTS baselines (
     id INTEGER PRIMARY KEY,
-    repo_url TEXT NOT NULL,
+    repo_url TEXT,
     branch TEXT,
     last_known_commit TEXT
 );
@@ -42,7 +46,9 @@ CREATE TABLE IF NOT EXISTS reviews (
     model_name TEXT,
     summary TEXT,
     created_at INTEGER,
-    FOREIGN KEY(patchset_id) REFERENCES patchsets(id)
+    interaction_id TEXT,
+    FOREIGN KEY(patchset_id) REFERENCES patchsets(id),
+    FOREIGN KEY(interaction_id) REFERENCES ai_interactions(id)
 );
 
 CREATE TABLE IF NOT EXISTS comments (

@@ -31,7 +31,7 @@ struct Cli {
     no_nntp: bool,
 }
 
-const PARSER_VERSION: i32 = 1;
+const PARSER_VERSION: i32 = 2;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -102,6 +102,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 metadata.subject.clone()
                             };
 
+                            // Detect baseline
+                            let baseline = crate::baseline::detect_baseline(
+                                &metadata.subject,
+                                patch_opt.as_ref().map(|p| p.body.as_str()).unwrap_or(""),
+                            );
+                            let baseline_id = match baseline {
+                                Ok(b) if b.branch.is_some() || b.commit.is_some() => {
+                                    match worker_db
+                                        .create_baseline(
+                                            b.repo_url.as_deref(),
+                                            b.branch.as_deref(),
+                                            b.commit.as_deref(),
+                                        )
+                                        .await
+                                    {
+                                        Ok(id) => Some(id),
+                                        Err(e) => {
+                                            error!("Failed to create baseline: {}", e);
+                                            None
+                                        }
+                                    }
+                                }
+                                _ => None,
+                            };
+
                             info!(
                                 "Article: group={}, id={}, author={}, subject=\"{}\"",
                                 group, article_id, metadata.author, subject
@@ -115,6 +140,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     metadata.date,
                                     metadata.total,
                                     PARSER_VERSION,
+                                    &metadata.to,
+                                    &metadata.cc,
+                                    baseline_id,
                                 )
                                 .await
                             {
