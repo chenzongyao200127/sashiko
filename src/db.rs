@@ -613,4 +613,49 @@ mod tests {
         // Should verify psb id is NOT in list
         assert!(list.iter().all(|r| r.id != psb));
     }
+
+    #[tokio::test]
+    async fn test_five_patch_series_merging() {
+        let db = setup_db().await;
+        let thread_id = db.create_thread("root_5", "Five Patch Series", 20000).await.unwrap();
+        let author = "Series Author <author@example.com>";
+
+        // Patches arrive in order: 1/5, 0/5, 2/5, 4/5, 3/5
+        let indices = [1, 0, 2, 4, 3];
+        let mut patchset_ids = Vec::new();
+
+        for (i, &idx) in indices.iter().enumerate() {
+            let msg_id = format!("msg_{}", idx);
+            let subject = format!("[PATCH {}/5] Feature part {}", idx, idx);
+            let time = 20000 + (i as i64 * 10); // 10s apart
+
+            db.create_message(&msg_id, thread_id, None, author, &subject, time, "").await.unwrap();
+            let ps_id = db.create_patchset(
+                thread_id,
+                if idx == 0 { Some(&msg_id) } else { None },
+                &subject,
+                author,
+                time,
+                5,
+                1,
+                "to",
+                "cc",
+                None,
+                None,
+                idx as u32
+            ).await.unwrap().unwrap();
+            
+            patchset_ids.push(ps_id);
+        }
+
+        // All IDs should be the same
+        let first_id = patchset_ids[0];
+        for id in patchset_ids {
+            assert_eq!(id, first_id, "All parts of the same series should share the same patchset ID");
+        }
+
+        // Verify the final subject is the cover letter (index 0)
+        let list = db.get_patchsets(1, 0).await.unwrap();
+        assert_eq!(list[0].subject.as_deref(), Some("[PATCH 0/5] Feature part 0"));
+    }
 }
