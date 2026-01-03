@@ -14,6 +14,7 @@
 - [x] Develop baseline detection logic (explicit and heuristic).
 - [x] Set up sandboxed `git am` environment.
 - [x] Implement Worktree Garbage Collector (pruning & disk limits).
+- [x] Refactor data model to Messages/Threads/Patches/Patchsets.
 - [x] **Task**: Download `lore.kernel.org` git archive (e.g., 2025 emails) for offline testing.
 - [x] **Task**: Implement file-based/git-based ingestor to process downloaded archives.
 - [x] **Task**: Add configuration option to disable NNTP and use local archives.
