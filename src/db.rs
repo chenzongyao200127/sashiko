@@ -52,7 +52,7 @@ impl Database {
 
         if let Ok(Some(row)) = rows.next().await {
             let thread_id: Option<i64> = row.get(2).ok();
-            
+
             // Fetch thread messages
             let mut messages = Vec::new();
             if let Some(tid) = thread_id {
@@ -109,7 +109,40 @@ impl Database {
     pub async fn migrate(&self) -> Result<()> {
         let schema = include_str!("schema.sql");
         self.conn.execute_batch(schema).await?;
+
+        // Manual migrations for existing tables
+        let _ = self
+            .try_add_column("messages", "to_recipients", "TEXT")
+            .await;
+        let _ = self
+            .try_add_column("messages", "cc_recipients", "TEXT")
+            .await;
+
         info!("Database schema applied");
+        Ok(())
+    }
+
+    pub async fn begin_transaction(&self) -> Result<()> {
+        self.conn.execute("BEGIN IMMEDIATE", ()).await?;
+        Ok(())
+    }
+
+    pub async fn commit_transaction(&self) -> Result<()> {
+        self.conn.execute("COMMIT", ()).await?;
+        Ok(())
+    }
+
+    async fn try_add_column(&self, table: &str, column: &str, type_def: &str) -> Result<()> {
+        let sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, type_def);
+        if let Err(e) = self.conn.execute(&sql, ()).await {
+            // Ignore error if column likely exists (duplicate column name)
+            info!(
+                "Migration: Column {} likely exists or error adding: {}",
+                column, e
+            );
+        } else {
+            info!("Migration: Added column {} to {}", column, table);
+        }
         Ok(())
     }
 

@@ -23,6 +23,11 @@
 - [x] Implement Tagging System (Messages, Threads, Patches, Patchsets).
 - [ ] Support parsing patches from email attachments.
 
+## Phase 2.5: Performance Optimization
+- [ ] **Task**: Implement Transactional Batching (group DB writes to reduce I/O).
+- [ ] **Task**: Implement Decoupled Parallel Parsing (separate parsing from DB writes).
+- [ ] **Task**: Implement Git-Backed Content Storage (store hashes, read from git, reduce DB size).
+
 ## Phase 3: AI Logic & Interaction Tracking (Deferred)
 - [ ] Implement model-agnostic AI provider abstraction.
 - [ ] Set up `ai_interactions` table and workflow engine for chain restoration.
