@@ -440,7 +440,19 @@ impl Database {
         // But main.rs logic should ensure consistency.
         // Let's use INSERT OR REPLACE.
         self.conn.execute(
-            "INSERT OR REPLACE INTO messages (message_id, thread_id, in_reply_to, author, subject, date, body, to_recipients, cc_recipients, git_blob_hash, mailing_list) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (message_id, thread_id, in_reply_to, author, subject, date, body, to_recipients, cc_recipients, git_blob_hash, mailing_list) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(message_id) DO UPDATE SET
+                thread_id=excluded.thread_id,
+                in_reply_to=excluded.in_reply_to,
+                author=excluded.author,
+                subject=excluded.subject,
+                date=excluded.date,
+                body=excluded.body,
+                to_recipients=excluded.to_recipients,
+                cc_recipients=excluded.cc_recipients,
+                git_blob_hash=excluded.git_blob_hash,
+                mailing_list=excluded.mailing_list",
             libsql::params![message_id, thread_id, in_reply_to, author, subject, date, body, to, cc, git_blob_hash, mailing_list],
         ).await?;
         Ok(())
