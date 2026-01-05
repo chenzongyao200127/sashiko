@@ -16,11 +16,17 @@ pub struct NntpSettings {
     pub groups: Vec<String>,
 }
 
+fn default_max_input_words() -> usize {
+    150_000
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[allow(unused)]
 pub struct AiSettings {
     pub provider: String,
     pub model: String,
+    #[serde(default = "default_max_input_words")]
+    pub max_input_words: usize,
 }
 
 #[derive(Debug, Deserialize, Clone)]

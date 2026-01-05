@@ -29,7 +29,7 @@ mod tests {
         let tools = ToolBox::new(linux_path, prompts_path);
         let prompts = PromptRegistry::new(PathBuf::from("review-prompts"));
 
-        let mut agent = Agent::new(client, tools, prompts);
+        let mut agent = Agent::new(client, tools, prompts, 150_000);
 
         // Create a dummy patchset that invites checking a file
         // We hope the model decides to check README or similar.

@@ -10,6 +10,7 @@ groups = ["org.kernel.vger.linux-kernel"]
 [ai]
 provider = "gemini"
 model = "gemini-3-flash-preview"
+max_input_words = 150000
 
 [server]
 host = "127.0.0.1"

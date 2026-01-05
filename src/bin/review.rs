@@ -211,7 +211,7 @@ async fn main() -> Result<()> {
             let client = GeminiClient::new(model_name);
             let tools = ToolBox::new(worktree.path.clone(), args.prompts.clone());
             let prompts = PromptRegistry::new(args.prompts.clone());
-            let mut agent = Agent::new(client, tools, prompts);
+            let mut agent = Agent::new(client, tools, prompts, settings.ai.max_input_words);
 
             let patchset_val = json!({
                 "id": patchset_id,

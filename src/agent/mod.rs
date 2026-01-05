@@ -19,6 +19,7 @@ pub struct Agent {
     tools: ToolBox,
     prompts: PromptRegistry,
     history: Vec<Content>,
+    max_input_words: usize,
 }
 
 pub struct AgentResult {
@@ -29,13 +30,61 @@ pub struct AgentResult {
 }
 
 impl Agent {
-    pub fn new(client: GeminiClient, tools: ToolBox, prompts: PromptRegistry) -> Self {
+    pub fn new(
+        client: GeminiClient,
+        tools: ToolBox,
+        prompts: PromptRegistry,
+        max_input_words: usize,
+    ) -> Self {
         Self {
             client,
             tools,
             prompts,
             history: Vec::new(),
+            max_input_words,
         }
+    }
+
+    fn count_history_words(&self, system_instruction: &Option<Content>) -> usize {
+        let mut count = 0;
+
+        // Count system instruction
+        if let Some(content) = system_instruction {
+            count += self.count_content_words(content);
+        }
+
+        // Count history
+        for content in &self.history {
+            count += self.count_content_words(content);
+        }
+
+        count
+    }
+
+    fn count_content_words(&self, content: &Content) -> usize {
+        let mut count = 0;
+        for part in &content.parts {
+            match part {
+                Part::Text { text, .. } => {
+                    count += text.split_whitespace().count();
+                }
+                Part::FunctionCall {
+                    function_call, ..
+                } => {
+                    count += function_call.name.split_whitespace().count();
+                    count += function_call.args.to_string().split_whitespace().count();
+                }
+                Part::FunctionResponse { function_response } => {
+                    count += function_response.name.split_whitespace().count();
+                    count += function_response
+                        .response
+                        .to_string()
+                        .split_whitespace()
+                        .count();
+                }
+            }
+        }
+        count
     }
 
     pub async fn run(&mut self, patchset: Value) -> Result<AgentResult> {
@@ -129,7 +178,17 @@ impl Agent {
                 }),
             };
 
-            info!("Sending request to Gemini...");
+            // Check input size
+            let word_count = self.count_history_words(&req.system_instruction);
+            if word_count > self.max_input_words {
+                return Err(anyhow!(
+                    "Input content exceeded maximum word limit ({} > {}). Stopping to prevent cost overrun.",
+                    word_count,
+                    self.max_input_words
+                ));
+            }
+
+            info!("Sending request to Gemini ({} words)...", word_count);
             let resp = self.client.generate_content(req).await?;
 
             if let Some(usage) = &resp.usage_metadata {
