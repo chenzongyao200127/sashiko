@@ -162,43 +162,41 @@ impl Reviewer {
                 let repo_path = PathBuf::from(&settings.git.repository_path);
 
                 for candidate in candidates {
-                    let (baseline_ref, remote_info, fetch_warning) = match candidate {
+                    let baseline_ref = candidate.as_str();
+                    let (remote_info, fetch_warning) = match candidate {
                         BaselineResolution::Commit(h) => {
                             info!("Using base-commit for {}: {}", patchset_id, h);
-                            (h, Option::<(String, String)>::None, Option::<String>::None)
+                            (Option::<(String, String)>::None, Option::<String>::None)
                         }
                         BaselineResolution::LocalRef(r) => {
                             info!("Using local baseline for {}: {}", patchset_id, r);
-                            (r, Option::<(String, String)>::None, Option::<String>::None)
+                            (Option::<(String, String)>::None, Option::<String>::None)
                         }
-                        BaselineResolution::RemoteTarget { url, name } => {
+                        BaselineResolution::RemoteTarget {
+                            url,
+                            name,
+                            branch: _,
+                        } => {
                             info!(
                                 "Fetching remote baseline for {}: {} ({})",
                                 patchset_id, name, url
                             );
                             match ensure_remote(&repo_path, &name, &url, false).await {
-                                Ok(_) => (format!("{}/HEAD", name), Some((url, name)), None),
+                                Ok(_) => (Some((url, name)), None),
                                 Err(e) => {
                                     let msg = format!(
                                         "Failed to fetch remote {}: {}. Skipping candidate.",
                                         url, e
                                     );
                                     error!("{}", msg);
-                                    // Skip this candidate if fetch failed
-                                    // We still record the attempt?
-                                    // Yes, let's record a failed attempt with empty baseline or special marker.
-                                    // But to run the tool we need a baseline.
-                                    // If fetch failed, we can't use this candidate.
-                                    // Let's create a record saying "Fetch Failed" and continue.
-
                                     // Record skipped experiment
                                     if let Err(e) = db
                                         .create_review_experiment(
                                             patchset_id,
                                             &settings.ai.provider,
                                             &settings.ai.model,
-                                            None, // No prompts hash needed for fetch failure
-                                            None, // No baseline ID
+                                            None,
+                                            None,
                                             &msg,
                                         )
                                         .await

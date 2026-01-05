@@ -9,15 +9,19 @@ use tracing::{info, warn};
 #[derive(Debug, Clone)]
 pub struct MaintainersEntry {
     pub subsystem: String,
-    pub trees: Vec<String>,
+    pub trees: Vec<(String, Option<String>)>, // (URL, Branch)
     pub patterns: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum BaselineResolution {
-    Commit(String),                             // Explicit base-commit hash
-    LocalRef(String),                           // e.g. "net-next/master" or "HEAD"
-    RemoteTarget { url: String, name: String }, // e.g. url="git://...", name="net-next"
+    Commit(String),   // Explicit base-commit hash
+    LocalRef(String), // e.g. "net-next/master" or "HEAD"
+    RemoteTarget {
+        url: String,
+        name: String,
+        branch: Option<String>,
+    }, // e.g. url="git://...", name="net-next"
 }
 
 impl BaselineResolution {
@@ -25,7 +29,10 @@ impl BaselineResolution {
         match self {
             BaselineResolution::Commit(h) => h.clone(),
             BaselineResolution::LocalRef(r) => r.clone(),
-            BaselineResolution::RemoteTarget { name, .. } => format!("{}/HEAD", name),
+            BaselineResolution::RemoteTarget { name, branch, .. } => match branch {
+                Some(b) => format!("{}/{}", name, b),
+                None => format!("{}/HEAD", name),
+            },
         }
     }
 }
@@ -92,8 +99,17 @@ impl BaselineRegistry {
                 match tag {
                     "T" => {
                         if val.starts_with("git ") {
-                            if let Some(url) = val.strip_prefix("git ") {
-                                current_trees.push(url.trim().to_string());
+                            if let Some(rest) = val.strip_prefix("git ") {
+                                let parts: Vec<&str> = rest.split_whitespace().collect();
+                                if !parts.is_empty() {
+                                    let url = parts[0].to_string();
+                                    let branch = if parts.len() > 1 {
+                                        Some(parts[1..].join(" "))
+                                    } else {
+                                        None
+                                    };
+                                    current_trees.push((url, branch));
+                                }
                             }
                         }
                     }
@@ -168,7 +184,7 @@ impl BaselineRegistry {
         // 3. Linux Next
         // Hardcoded linux-next URL
         let linux_next_url = "https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git";
-        candidates.push(self.resolve_url(linux_next_url));
+        candidates.push(self.resolve_url(linux_next_url, None));
 
         // 4. Mainline (Local Origin/Master or HEAD)
         // We assume 'origin' is mainline if available, or just HEAD.
@@ -194,7 +210,7 @@ impl BaselineRegistry {
         files: &[String],
         subject: &str,
     ) -> Option<BaselineResolution> {
-        let mut tree_counts: HashMap<String, usize> = HashMap::new();
+        let mut tree_counts: HashMap<(String, Option<String>), usize> = HashMap::new();
 
         for file in files {
             for entry in &self.entries {
@@ -223,7 +239,7 @@ impl BaselineRegistry {
             return None;
         }
 
-        let mut candidates: Vec<(&String, &usize)> = tree_counts.iter().collect();
+        let mut candidates: Vec<(&(String, Option<String>), &usize)> = tree_counts.iter().collect();
         candidates.sort_by(|a, b| b.1.cmp(a.1));
 
         let subject_lower = subject.to_lowercase();
@@ -232,11 +248,12 @@ impl BaselineRegistry {
         ];
         let is_next = subject_lower.contains("next");
 
-        for (url, _) in &candidates {
+        for (tree, _) in &candidates {
+            let (url, branch) = tree;
             for kw in keywords {
                 if subject_lower.contains(kw) && url.contains(kw) {
                     if is_next && url.contains("next") {
-                        return Some(self.resolve_url(url));
+                        return Some(self.resolve_url(url, branch.clone()));
                     }
                     if !is_next && !url.contains("next") {
                         // Prefer non-next if subject doesn't say next?
@@ -244,21 +261,26 @@ impl BaselineRegistry {
                 }
             }
             if is_next && url.contains("next") {
-                return Some(self.resolve_url(url));
+                return Some(self.resolve_url(url, branch.clone()));
             }
         }
 
-        Some(self.resolve_url(candidates[0].0))
+        let (url, branch) = candidates[0].0;
+        Some(self.resolve_url(url, branch.clone()))
     }
 
-    fn resolve_url(&self, url: &str) -> BaselineResolution {
+    fn resolve_url(&self, url: &str, branch: Option<String>) -> BaselineResolution {
         if let Some(remote_name) = self.remote_map.get(url) {
-            BaselineResolution::LocalRef(format!("{}/HEAD", remote_name))
+            match branch {
+                Some(b) => BaselineResolution::LocalRef(format!("{}/{}", remote_name, b)),
+                None => BaselineResolution::LocalRef(format!("{}/HEAD", remote_name)),
+            }
         } else {
             let name = self.suggest_remote_name(url);
             BaselineResolution::RemoteTarget {
                 url: url.to_string(),
                 name,
+                branch,
             }
         }
     }
