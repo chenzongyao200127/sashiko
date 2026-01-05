@@ -12,6 +12,9 @@
         .kv { display: grid; grid-template-columns: 150px 1fr; gap: 10px; margin-bottom: 5px; }
         .label { font-weight: bold; color: #555; }
         .status-Pending { color: orange; }
+        .status-Applying { color: #1976d2; }
+        .status-Analyzing { color: #1976d2; }
+        .status-Finished { color: green; }
         .status-Applied { color: green; }
         .status-Failed { color: red; }
         .tag { display: inline-block; background: #e0f7fa; color: #006064; padding: 1px 4px; border-radius: 3px; font-size: 0.75em; margin-right: 4px; border: 1px solid #b2ebf2; vertical-align: middle; }
@@ -20,6 +23,20 @@
         a { color: #007bff; text-decoration: none; }
         a:hover { text-decoration: underline; }
         .copy-btn { cursor: pointer; border: 1px solid #ccc; background: #fff; padding: 2px 5px; border-radius: 3px; font-size: 12px; }
+
+        /* Review Cards */
+        .review-card { border: 1px solid #ddd; padding: 15px; margin-bottom: 15px; border-radius: 4px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .review-header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 10px; flex-wrap: wrap; gap: 10px; }
+        .review-title { font-weight: bold; font-size: 1.1em; }
+        .review-status { font-weight: bold; padding: 2px 6px; border-radius: 4px; background: #f0f0f0; }
+        .review-meta { display: grid; grid-template-columns: auto 1fr; gap: 8px 15px; font-size: 0.9em; color: #555; margin-bottom: 10px; }
+        .review-meta-label { font-weight: 600; }
+        .review-summary { margin-bottom: 10px; font-weight: 500; background: #f9f9f9; padding: 10px; border-left: 4px solid #ddd; }
+        .review-details { display: none; margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 10px; font-size: 0.9em; }
+        .review-details.open { display: block; }
+        .toggle-btn { cursor: pointer; color: #007bff; font-size: 0.9em; background: none; border: none; padding: 0; text-decoration: underline; margin-right: 10px; }
+        .log-block { background: #333; color: #f0f0f0; padding: 10px; white-space: pre-wrap; font-family: monospace; max-height: 400px; overflow-y: auto; border-radius: 4px; font-size: 0.85em; margin-top: 5px; }
+        .token-stats { font-size: 0.85em; color: #777; margin-top: 5px; }
     </style>
 </head>
 <body>
@@ -30,6 +47,15 @@
     <script>
         function copyToClipboard(text) {
             navigator.clipboard.writeText(text);
+        }
+
+        function toggleDetails(id) {
+            const el = document.getElementById(id);
+            if (el.classList.contains('open')) {
+                el.classList.remove('open');
+            } else {
+                el.classList.add('open');
+            }
         }
 
         async function fetchDetails() {
@@ -59,51 +85,95 @@
             
             let reviewsHtml = '';
             if (data.reviews && data.reviews.length > 0) {
-                reviewsHtml = `
-                    <table class="reviews-table">
-                        <thead>
-                            <tr>
-                                <th>Provider/Model</th>
-                                <th>Baseline</th>
-                                <th>Prompts</th>
-                                <th>Result</th>
-                                <th>Summary</th>
-                                <th>Date</th>
-                                <th>Links</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${data.reviews.map(r => {
-                                const rDate = r.created_at ? new Date(r.created_at * 1000).toLocaleString() : '-';
-                                const inputLink = r.input ? `<a href="data:text/plain;charset=utf-8,${encodeURIComponent(r.input)}" target="_blank">Input</a>` : '-';
-                                const outputLink = r.output ? `<a href="data:text/plain;charset=utf-8,${encodeURIComponent(r.output)}" target="_blank">Result</a>` : '-';
-                                const prompts = r.prompts_hash ? r.prompts_hash.substring(0, 8) : '-';
-                                const providerModel = `${r.provider || '-'}/${r.model || '-'}`;
-                                
-                                let baselineStr = '-';
-                                if (r.baseline) {
-                                    const parts = [];
-                                    if (r.baseline.repo_url) parts.push(r.baseline.repo_url);
-                                    if (r.baseline.branch) parts.push(r.baseline.branch);
-                                    if (r.baseline.commit) parts.push(r.baseline.commit.substring(0, 8));
-                                    baselineStr = parts.join('<br>');
-                                }
+                reviewsHtml = data.reviews.map((r, index) => {
+                    const rDate = r.created_at ? new Date(r.created_at * 1000).toLocaleString() : '-';
+                    const providerModel = `${r.provider || '?'}/${r.model || '?'}`;
+                    const prompts = r.prompts_hash ? r.prompts_hash.substring(0, 8) : '-';
+                    const status = r.status || 'Finished'; // Default for old records
+                    const statusClass = `status-${status.split(' ')[0]}`; // Handle "Applying Patches" -> "Applying"
+                    
+                    let baselineStr = '-';
+                    if (r.baseline) {
+                        const parts = [];
+                        if (r.baseline.repo_url) parts.push(r.baseline.repo_url);
+                        if (r.baseline.branch) parts.push(r.baseline.branch);
+                        if (r.baseline.commit) parts.push(r.baseline.commit.substring(0, 8));
+                        baselineStr = parts.join(' / ');
+                    }
 
-                                return `
-                                    <tr>
-                                        <td>${providerModel}</td>
-                                        <td>${baselineStr}</td>
-                                        <td>${prompts}</td>
-                                        <td>${r.result || '-'}</td>
-                                        <td>${r.summary || '-'}</td>
-                                        <td>${rDate}</td>
-                                        <td>${inputLink} | ${outputLink}</td>
-                                    </tr>
-                                `;
-                            }).join('')}
-                        </tbody>
-                    </table>
-                `;
+                    const tokensIn = r.tokens_in || 0;
+                    const tokensOut = r.tokens_out || 0;
+                    const totalTokens = tokensIn + tokensOut;
+
+                    const detailsId = `review-details-${index}`;
+                    
+                    let logsSection = '';
+                    if (r.logs) {
+                        logsSection = `
+                            <div style="margin-top: 10px;">
+                                <strong>Logs / Errors:</strong>
+                                <div class="log-block">${escapeHtml(r.logs)}</div>
+                            </div>
+                        `;
+                    }
+
+                    let inputSection = '';
+                    if (r.input) {
+                        inputSection = `
+                            <div style="margin-top: 10px;">
+                                <button class="toggle-btn" onclick="toggleDetails('input-${index}')">Show Input Context</button>
+                                <div id="input-${index}" class="review-details">
+                                    <div class="log-block" style="background:#eee; color:#333;">${escapeHtml(r.input)}</div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    
+                    let outputSection = '';
+                     if (r.output) {
+                        outputSection = `
+                            <div style="margin-top: 10px;">
+                                <button class="toggle-btn" onclick="toggleDetails('output-${index}')">Show Raw Output</button>
+                                <div id="output-${index}" class="review-details">
+                                    <div class="log-block" style="background:#eee; color:#333;">${escapeHtml(r.output)}</div>
+                                </div>
+                            </div>
+                        `;
+                    }
+
+                    return `
+                        <div class="review-card">
+                            <div class="review-header">
+                                <div class="review-title">Review #${data.reviews.length - index}</div>
+                                <div class="review-status ${statusClass}">${status}</div>
+                            </div>
+                            
+                            <div class="review-meta">
+                                <div class="review-meta-label">Date:</div><div>${rDate}</div>
+                                <div class="review-meta-label">Model:</div><div>${providerModel}</div>
+                                <div class="review-meta-label">Baseline:</div><div>${baselineStr}</div>
+                                <div class="review-meta-label">Prompts:</div><div>${prompts}</div>
+                                <div class="review-meta-label">Result:</div><div>${r.result || '-'}</div>
+                            </div>
+
+                            ${r.summary ? `<div class="review-summary">${escapeHtml(r.summary)}</div>` : ''}
+                            
+                            <div class="token-stats">
+                                Tokens: ${tokensIn.toLocaleString()} in + ${tokensOut.toLocaleString()} out = ${totalTokens.toLocaleString()} total
+                            </div>
+
+                            <div style="margin-top: 10px;">
+                                <button class="toggle-btn" onclick="toggleDetails('${detailsId}')">Show Details</button>
+                            </div>
+
+                            <div id="${detailsId}" class="review-details">
+                                ${logsSection}
+                                ${inputSection}
+                                ${outputSection}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
             } else {
                 reviewsHtml = '<p>No AI reviews yet.</p>';
             }
@@ -193,7 +263,7 @@
                     <div class="kv"><div class="label">Date:</div><div>${date}</div></div>
                     <div class="kv"><div class="label">Status:</div><div class="status-${data.status}">${data.status || 'Pending'}</div></div>
                     <div class="kv"><div class="label">Subsystems:</div><div>${data.subsystems && data.subsystems.length > 0 ? data.subsystems.map(s => `<span class="tag">${s}</span>`).join('') : '-'}</div></div>
-                    <div class="kv"><div class="label">Progress:</div><div>${data.received_parts || 0} / ${data.total_parts || 0}</div></div>
+                    <div class="kv"><div class="label">Patches received:</div><div>${data.received_parts || 0} / ${data.total_parts || 0}</div></div>
                     ${patchesHtml}
                 </div>
 
@@ -207,6 +277,16 @@
                     ${reviewsHtml}
                 </div>
             `;
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
         }
 
         fetchDetails();
