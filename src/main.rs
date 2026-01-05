@@ -64,7 +64,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.migrate().await?;
 
     if let Some(Commands::Inspect) = cli.command {
-        return sashiko::inspector::run_inspection(db).await.map_err(|e| e.into());
+        return sashiko::inspector::run_inspection(db)
+            .await
+            .map_err(|e| e.into());
     }
 
     // Create internal task queues

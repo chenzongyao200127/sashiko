@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod ai;
 pub mod api;
 pub mod baseline;
@@ -8,6 +9,5 @@ pub mod ingestor;
 pub mod inspector;
 pub mod nntp;
 pub mod patch;
-pub mod settings;
-pub mod agent;
 pub mod reviewer;
+pub mod settings;

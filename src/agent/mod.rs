@@ -1,11 +1,11 @@
-pub mod tools;
 pub mod prompts;
+pub mod tools;
 
-use anyhow::{Result, anyhow};
-use crate::ai::gemini::{GeminiClient, GenerateContentRequest, Content, Part, FunctionResponse};
-use crate::agent::tools::ToolBox;
 use crate::agent::prompts::PromptRegistry;
-use serde_json::{json, Value};
+use crate::agent::tools::ToolBox;
+use crate::ai::gemini::{Content, FunctionResponse, GeminiClient, GenerateContentRequest, Part};
+use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 use tracing::{info, warn};
 
 pub struct Agent {
@@ -31,9 +31,9 @@ impl Agent {
     pub async fn run(&mut self, patchset: Value) -> Result<String> {
         let system_prompt = self.prompts.get_system_prompt().await?;
         let context_prompt = self.prompts.build_context_prompt(&patchset).await?;
-        
+
         let initial_user_message = format!(
-            "Review this patchset:\nSubject: {}\\nAuthor: {}\\n\n{}", 
+            "Review this patchset:\nSubject: {}\\nAuthor: {}\\n\n{}",
             patchset["subject"].as_str().unwrap_or("Unknown"),
             patchset["author"].as_str().unwrap_or("Unknown"),
             context_prompt
@@ -59,7 +59,9 @@ impl Agent {
             info!("Sending request to Gemini...");
             let resp = self.client.generate_content(req).await?;
 
-            let candidate = resp.candidates.as_ref() 
+            let candidate = resp
+                .candidates
+                .as_ref()
                 .and_then(|c| c.first())
                 .ok_or_else(|| anyhow!("No candidates returned"))?;
 
@@ -76,7 +78,7 @@ impl Agent {
                     Part::FunctionCall(call) => {
                         has_calls = true;
                         info!("Tool Call: {} args: {}", call.name, call.args);
-                        
+
                         let result = match self.tools.call(&call.name, call.args.clone()).await {
                             Ok(val) => val,
                             Err(e) => {
@@ -89,10 +91,10 @@ impl Agent {
                             name: call.name.clone(),
                             response: result,
                         }));
-                    },
+                    }
                     Part::Text(text) => {
                         final_text.push_str(text);
-                    },
+                    }
                     _ => {}
                 }
             }

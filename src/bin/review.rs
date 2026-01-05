@@ -7,11 +7,11 @@ use sashiko::{
     git_ops::GitWorktree,
     settings::Settings,
 };
+use serde::Deserialize;
+use serde_json::json;
+use std::io::Read;
 use std::path::PathBuf;
 use tracing::info;
-use serde_json::json;
-use serde::Deserialize;
-use std::io::Read;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -67,8 +67,11 @@ async fn main() -> Result<()> {
         let mut buffer = String::new();
         std::io::stdin().read_to_string(&mut buffer)?;
         let input: ReviewInput = serde_json::from_str(&buffer)?;
-        
-        info!("Loaded patchset via JSON: {} (ID: {})", input.subject, input.id);
+
+        info!(
+            "Loaded patchset via JSON: {} (ID: {})",
+            input.subject, input.id
+        );
         (input.id, input.subject, input.patches)
     } else {
         // Read from DB
@@ -76,24 +79,35 @@ async fn main() -> Result<()> {
 
         // Check patchset exists
         let patchset_json = if let Some(id) = args.patchset {
-            db.get_patchset_details(id).await?
+            db.get_patchset_details(id)
+                .await?
                 .ok_or_else(|| anyhow::anyhow!("Patchset {} not found", id))?
         } else if let Some(msg_id) = args.message_id {
-            db.get_patchset_details_by_msgid(&msg_id).await?
+            db.get_patchset_details_by_msgid(&msg_id)
+                .await?
                 .ok_or_else(|| anyhow::anyhow!("Patchset for message ID {} not found", msg_id))?
         } else {
-            return Err(anyhow::anyhow!("Either --patchset, --message-id, or --json must be provided"));
+            return Err(anyhow::anyhow!(
+                "Either --patchset, --message-id, or --json must be provided"
+            ));
         };
 
-        let pid = patchset_json["id"].as_i64()
+        let pid = patchset_json["id"]
+            .as_i64()
             .ok_or_else(|| anyhow::anyhow!("Patchset ID not found in database response"))?;
-        let subj = patchset_json["subject"].as_str().unwrap_or("Unknown").to_string();
+        let subj = patchset_json["subject"]
+            .as_str()
+            .unwrap_or("Unknown")
+            .to_string();
 
         info!("Reviewing patchset: {} (ID: {})", subj, pid);
 
         let db_diffs = db.get_patch_diffs(pid).await?;
-        let patches = db_diffs.into_iter().map(|(idx, diff)| PatchInput { index: idx, diff }).collect();
-        
+        let patches = db_diffs
+            .into_iter()
+            .map(|(idx, diff)| PatchInput { index: idx, diff })
+            .collect();
+
         (pid, subj, patches)
     };
 
@@ -106,19 +120,23 @@ async fn main() -> Result<()> {
 
     info!("Created worktree at {:?}", worktree.path);
     info!("Found {} patches to apply", diffs.len());
-    
+
     let mut patch_results = Vec::new();
 
     for p in diffs {
         info!("Applying patch part {}", p.index);
         match worktree.apply_raw_diff(&p.diff).await {
             Ok(output) => {
-                let status = if output.status.success() { "applied" } else { "failed" };
+                let status = if output.status.success() {
+                    "applied"
+                } else {
+                    "failed"
+                };
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                
+
                 if status == "failed" {
-                     info!("Failed to apply patch {}: {}", p.index, stderr);
+                    info!("Failed to apply patch {}: {}", p.index, stderr);
                 }
 
                 patch_results.push(json!({
@@ -128,7 +146,7 @@ async fn main() -> Result<()> {
                     "stderr": stderr,
                     "exit_code": output.status.code()
                 }));
-            },
+            }
             Err(e) => {
                 info!("Error applying patch {}: {}", p.index, e);
                 patch_results.push(json!({
