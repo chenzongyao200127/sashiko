@@ -1,3 +1,6 @@
 [submodule "review-prompts"]
 	path = review-prompts
 	url = git@github.com:masoncl/review-prompts.git
+[submodule "linux"]
+	path = linux
+	url = https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
