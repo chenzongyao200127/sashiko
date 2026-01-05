@@ -45,19 +45,46 @@ pub struct BaselineRegistry {
 
 impl BaselineRegistry {
     pub fn new(repo_path: &Path) -> Result<Self> {
-        let maintainers_path = repo_path.join("MAINTAINERS");
-        let entries = if maintainers_path.exists() {
-            info!("Loading MAINTAINERS from {:?}", maintainers_path);
-            Self::parse_maintainers(&maintainers_path)?
-        } else {
-            warn!(
-                "MAINTAINERS file not found at {:?}, baseline detection will be limited",
-                maintainers_path
-            );
-            Vec::new()
-        };
-
         let remote_map = Self::load_git_remotes(repo_path).unwrap_or_default();
+
+        // Identify Linus's tree
+        let linus_remote = remote_map
+            .iter()
+            .find(|(url, _)| url.contains("torvalds/linux.git"))
+            .map(|(_, name)| name.as_str())
+            .unwrap_or("origin");
+
+        let ref_name = format!("{}/master", linus_remote);
+        info!(
+            "Attempting to load MAINTAINERS from {}:MAINTAINERS",
+            ref_name
+        );
+
+        let entries = match Self::read_file_from_git(repo_path, &ref_name, "MAINTAINERS") {
+            Ok(content) => {
+                let reader = std::io::Cursor::new(content);
+                Self::parse_maintainers(reader)?
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to load MAINTAINERS from git {}: {}. Falling back to local file.",
+                    ref_name, e
+                );
+                let maintainers_path = repo_path.join("MAINTAINERS");
+                if maintainers_path.exists() {
+                    info!("Loading MAINTAINERS from local file {:?}", maintainers_path);
+                    let file = std::fs::File::open(&maintainers_path)?;
+                    let reader = std::io::BufReader::new(file);
+                    Self::parse_maintainers(reader)?
+                } else {
+                    warn!(
+                        "MAINTAINERS file not found at {:?}, baseline detection will be limited",
+                        maintainers_path
+                    );
+                    Vec::new()
+                }
+            }
+        };
 
         Ok(Self {
             entries,
@@ -65,10 +92,23 @@ impl BaselineRegistry {
         })
     }
 
-    fn parse_maintainers(path: &Path) -> Result<Vec<MaintainersEntry>> {
-        let file = std::fs::File::open(path)?;
-        let reader = std::io::BufReader::new(file);
+    fn read_file_from_git(repo_path: &Path, rev: &str, file_path: &str) -> Result<String> {
+        use std::process::Command;
+        let output = Command::new("git")
+            .current_dir(repo_path)
+            .args(["show", &format!("{}:{}", rev, file_path)])
+            .output()?;
 
+        if !output.status.success() {
+            return Err(anyhow::anyhow!(
+                "git show failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    fn parse_maintainers<R: BufRead>(reader: R) -> Result<Vec<MaintainersEntry>> {
         let mut entries = Vec::new();
         let mut current_subsystem = String::new();
         let mut current_trees = Vec::new();
