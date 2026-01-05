@@ -143,7 +143,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut buffer = Vec::with_capacity(100);
         let mut total_processed = 0;
         let mut total_ingested = 0;
-        let mut total_skipped = 0;
         let mut total_errors = 0;
 
         loop {
@@ -162,15 +161,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for article in buffer.drain(..) {
                 match process_parsed_article(&worker_db, article).await {
                     ProcessStatus::Ingested => total_ingested += 1,
-                    ProcessStatus::Skipped => total_skipped += 1,
                     ProcessStatus::Error => total_errors += 1,
                 }
                 total_processed += 1;
 
                 if total_processed % 500 == 0 {
                     info!(
-                        "Ingestion Progress: {} processed ({} ingested, {} skipped, {} errors)",
-                        total_processed, total_ingested, total_skipped, total_errors
+                        "Ingestion Progress: {} processed ({} ingested, {} errors)",
+                        total_processed, total_ingested, total_errors
                     );
                 }
             }
@@ -185,8 +183,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Final stats
         info!(
-            "Ingestion Complete: {} processed ({} ingested, {} skipped, {} errors)",
-            total_processed, total_ingested, total_skipped, total_errors
+            "Ingestion Complete: {} processed ({} ingested, {} errors)",
+            total_processed, total_ingested, total_errors
         );
     });
 
@@ -233,7 +231,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 enum ProcessStatus {
     Ingested,
-    Skipped,
     Error,
 }
 
@@ -400,7 +397,8 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) ->
             }
             Ok(None) => {
                 // Skipped patchset creation (reply mismatch or duplicate)
-                ProcessStatus::Skipped
+                // BUT message was ingested successfully.
+                ProcessStatus::Ingested
             }
             Err(e) => {
                 error!("Failed to save patchset: {}", e);
@@ -409,7 +407,8 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) ->
         }
     } else {
         // Skipped patchset creation/update for non-patch message
-        ProcessStatus::Skipped
+        // BUT message was ingested successfully.
+        ProcessStatus::Ingested
     }
 }
 
