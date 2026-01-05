@@ -842,36 +842,46 @@ impl Database {
         }
     }
 
-    fn build_search(&self, query: Option<String>) -> (String, Vec<String>) {
+    fn build_search(&self, query: Option<String>, target: &str) -> (String, Vec<String>) {
+        let mut conditions = Vec::new();
+        let mut params = Vec::new();
+
+        // Always exclude placeholders
+        conditions.push("subject != '(placeholder)'".to_string());
+
         if let Some(q) = query {
             let q = q.trim();
-            if q.is_empty() {
-                return ("WHERE subject != '(placeholder)'".to_string(), vec![]);
-            }
-
-            if let Some(val) = q.strip_prefix("author:") {
-                return (
-                    "WHERE author LIKE ? AND subject != '(placeholder)'".to_string(),
-                    vec![format!("%{}%", val.trim())],
-                );
-            } else if let Some(val) = q.strip_prefix("subject:") {
-                return (
-                    "WHERE subject LIKE ? AND subject != '(placeholder)'".to_string(),
-                    vec![format!("%{}%", val.trim())],
-                );
-            } else if let Some(val) = q.strip_prefix("date:") {
-                return (
-                    "WHERE datetime(date, 'unixepoch') LIKE ? AND subject != '(placeholder)'".to_string(),
-                    vec![format!("%{}%", val.trim())],
-                );
-            } else {
-                return (
-                    "WHERE (subject LIKE ? OR author LIKE ?) AND subject != '(placeholder)'".to_string(),
-                    vec![format!("%{}%", q), format!("%{}%", q)],
-                );
+            if !q.is_empty() {
+                if let Some(val) = q.strip_prefix("author:") {
+                    conditions.push("author LIKE ?".to_string());
+                    params.push(format!("%{}%", val.trim()));
+                } else if let Some(val) = q.strip_prefix("subject:") {
+                    conditions.push("subject LIKE ?".to_string());
+                    params.push(format!("%{}%", val.trim()));
+                } else if let Some(val) = q.strip_prefix("date:") {
+                    conditions.push("datetime(date, 'unixepoch') LIKE ?".to_string());
+                    params.push(format!("%{}%", val.trim()));
+                } else if let Some(val) = q.strip_prefix("subsystem:") {
+                    let sub_query = if target == "patchset" {
+                        "id IN (SELECT patchset_id FROM patchsets_subsystems ps JOIN subsystems s ON ps.subsystem_id = s.id WHERE s.name LIKE ?)"
+                    } else {
+                        "id IN (SELECT message_id FROM messages_subsystems ms JOIN subsystems s ON ms.subsystem_id = s.id WHERE s.name LIKE ?)"
+                    };
+                    conditions.push(sub_query.to_string());
+                    params.push(format!("%{}%", val.trim()));
+                } else {
+                    conditions.push("(subject LIKE ? OR author LIKE ?)".to_string());
+                    params.push(format!("%{}%", q));
+                    params.push(format!("%{}%", q));
+                }
             }
         }
-        ("WHERE subject != '(placeholder)'".to_string(), vec![])
+
+        if conditions.is_empty() {
+            (String::new(), vec![])
+        } else {
+            (format!("WHERE {}", conditions.join(" AND ")), params)
+        }
     }
 
     pub async fn get_patchsets(
@@ -880,7 +890,7 @@ impl Database {
         offset: usize,
         query: Option<String>,
     ) -> Result<Vec<PatchsetRow>> {
-        let (where_clause, params) = self.build_search(query);
+        let (where_clause, params) = self.build_search(query, "patchset");
         // We use p.* alias implicitely by using unqualified names in WHERE which is fine given no collisions.
         // But for clarity/safety we should alias in FROM.
         // build_search returns "WHERE author ...".
@@ -936,7 +946,7 @@ impl Database {
         offset: usize,
         query: Option<String>,
     ) -> Result<Vec<MessageRow>> {
-        let (where_clause, params) = self.build_search(query);
+        let (where_clause, params) = self.build_search(query, "message");
         let sql = format!(
             "SELECT id, message_id, thread_id, in_reply_to, author, subject, date, body, to_recipients, cc_recipients, git_blob_hash, mailing_list FROM messages {} ORDER BY date DESC LIMIT ? OFFSET ?",
             where_clause
@@ -972,7 +982,7 @@ impl Database {
     }
 
     pub async fn count_patchsets(&self, query: Option<String>) -> Result<usize> {
-        let (where_clause, params) = self.build_search(query);
+        let (where_clause, params) = self.build_search(query, "patchset");
         let sql = format!("SELECT COUNT(*) FROM patchsets {}", where_clause);
 
         let mut args = Vec::new();
@@ -990,7 +1000,7 @@ impl Database {
     }
 
     pub async fn count_messages(&self, query: Option<String>) -> Result<usize> {
-        let (where_clause, params) = self.build_search(query);
+        let (where_clause, params) = self.build_search(query, "message");
         let sql = format!("SELECT COUNT(*) FROM messages {}", where_clause);
 
         let mut args = Vec::new();
