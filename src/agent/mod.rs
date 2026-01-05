@@ -1,13 +1,15 @@
+#[cfg(test)]
+mod integration_test;
 pub mod prompts;
 pub mod tools;
 #[cfg(test)]
 mod tools_test;
-#[cfg(test)]
-mod integration_test;
 
 use crate::agent::prompts::PromptRegistry;
 use crate::agent::tools::ToolBox;
-use crate::ai::gemini::{Content, FunctionResponse, GeminiClient, GenerateContentRequest, GenerationConfig, Part};
+use crate::ai::gemini::{
+    Content, FunctionResponse, GeminiClient, GenerateContentRequest, GenerationConfig, Part,
+};
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use tracing::{info, warn};
@@ -153,11 +155,7 @@ impl Agent {
                 };
 
                 let json_val: Value = serde_json::from_str(clean_text).map_err(|e| {
-                    anyhow!(
-                        "Failed to parse JSON response: {}. Text: {}",
-                        e,
-                        final_text
-                    )
+                    anyhow!("Failed to parse JSON response: {}. Text: {}", e, final_text)
                 })?;
                 return Ok(json_val);
             }

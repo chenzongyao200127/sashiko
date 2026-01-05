@@ -46,6 +46,28 @@ pub struct MessageRow {
     pub mailing_list: Option<String>,
 }
 
+pub struct ReviewExperimentParams<'a> {
+    pub patchset_id: i64,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub prompts_hash: Option<&'a str>,
+    pub baseline_id: Option<i64>,
+    pub result_description: &'a str,
+    pub interaction_id: Option<&'a str>,
+}
+
+pub struct AiInteractionParams<'a> {
+    pub id: &'a str,
+    pub parent_id: Option<&'a str>,
+    pub workflow_id: Option<&'a str>,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub input: &'a str,
+    pub output: &'a str,
+    pub tokens_in: u32,
+    pub tokens_out: u32,
+}
+
 impl Database {
     pub async fn get_message_details(&self, id: i64) -> Result<Option<MessageRow>> {
         let mut rows = self.conn.query(
@@ -251,58 +273,38 @@ impl Database {
         Ok(())
     }
 
-    pub async fn create_review_experiment(
-        &self,
-        patchset_id: i64,
-        provider: &str,
-        model: &str,
-        prompts_hash: Option<&str>,
-        baseline_id: Option<i64>,
-        result_description: &str,
-        interaction_id: Option<&str>,
-    ) -> Result<()> {
+    pub async fn create_review_experiment(&self, params: ReviewExperimentParams<'_>) -> Result<()> {
         self.conn.execute(
             "INSERT INTO reviews (patchset_id, provider, model_name, prompts_git_hash, baseline_id, result_description, interaction_id, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             libsql::params![
-                patchset_id,
-                provider,
-                model,
-                prompts_hash,
-                baseline_id,
-                result_description,
-                interaction_id,
+                params.patchset_id,
+                params.provider,
+                params.model,
+                params.prompts_hash,
+                params.baseline_id,
+                params.result_description,
+                params.interaction_id,
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64
             ],
         ).await?;
         Ok(())
     }
 
-    pub async fn create_ai_interaction(
-        &self,
-        id: &str,
-        parent_id: Option<&str>,
-        workflow_id: Option<&str>,
-        provider: &str,
-        model: &str,
-        input: &str,
-        output: &str,
-        tokens_in: u32,
-        tokens_out: u32,
-    ) -> Result<()> {
+    pub async fn create_ai_interaction(&self, params: AiInteractionParams<'_>) -> Result<()> {
         self.conn.execute(
             "INSERT INTO ai_interactions (id, parent_interaction_id, workflow_id, provider, model, input_context, output_raw, tokens_in, tokens_out, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             libsql::params![
-                id,
-                parent_id,
-                workflow_id,
-                provider,
-                model,
-                input,
-                output,
-                tokens_in,
-                tokens_out,
+                params.id,
+                params.parent_id,
+                params.workflow_id,
+                params.provider,
+                params.model,
+                params.input,
+                params.output,
+                params.tokens_in,
+                params.tokens_out,
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64
             ],
         ).await?;

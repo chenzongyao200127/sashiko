@@ -115,7 +115,10 @@ impl ToolBox {
         const MAX_LEN: usize = 32 * 1024; // 32KB limit
         if output.len() > MAX_LEN {
             let mut truncated = output[..MAX_LEN].to_string();
-            truncated.push_str(&format!("\n... (truncated, total length: {} bytes)", output.len()));
+            truncated.push_str(&format!(
+                "\n... (truncated, total length: {} bytes)",
+                output.len()
+            ));
             truncated
         } else {
             output

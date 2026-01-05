@@ -96,18 +96,18 @@ mod tests {
         // Diff HEAD~1 HEAD
         let args = json!({ "args": ["HEAD~1", "HEAD"] });
         let result = rt.block_on(toolbox.call("git_diff", args));
-        
-        // This might fail if repo is shallow with depth 1, let's see. 
+
+        // This might fail if repo is shallow with depth 1, let's see.
         // We know from bootstrap we did depth 20 or 500, so it should be fine.
         // But `linux` dir might be the original checkout.
         if let Ok(val) = result {
-             let content = val["content"].as_str().unwrap();
-             // Diff might be empty if no changes, but command should succeed
-             assert!(!content.is_empty() || content.is_empty()); 
+            let content = val["content"].as_str().unwrap();
+            // Diff might be empty if no changes, but command should succeed
+            assert!(!content.is_empty() || content.is_empty());
         } else {
-             // If HEAD~1 doesn't exist (e.g. initial commit), we accept error but log it
-             // Actually, verify success of command execution at least
-             // panic!("Git diff failed: {:?}", result.err());
+            // If HEAD~1 doesn't exist (e.g. initial commit), we accept error but log it
+            // Actually, verify success of command execution at least
+            // panic!("Git diff failed: {:?}", result.err());
         }
     }
 }

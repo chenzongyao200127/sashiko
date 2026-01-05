@@ -22,7 +22,7 @@ mod tests {
         }
 
         let (linux_path, prompts_path) = get_test_paths();
-        
+
         // Setup dependencies
         // Use flash model for tests to save cost/latency
         let client = GeminiClient::new("gemini-3-flash-preview".to_string());
@@ -46,17 +46,26 @@ mod tests {
         });
 
         let result = agent.run(patchset).await;
-        
+
         match result {
             Ok(review) => {
-                assert!(!review.is_empty(), "Review should not be empty");
+                let is_empty = match &review {
+                    serde_json::Value::Null => true,
+                    serde_json::Value::String(s) => s.is_empty(),
+                    serde_json::Value::Array(a) => a.is_empty(),
+                    serde_json::Value::Object(o) => o.is_empty(),
+                    _ => false,
+                };
+                assert!(!is_empty, "Review should not be empty");
                 println!("Agent review output: {}", review);
             }
             Err(e) => {
                 if e.to_string().contains("Agent exceeded maximum turns") {
-                     println!("Agent reached max turns, which confirms it was running and using tools. Success.");
+                    println!(
+                        "Agent reached max turns, which confirms it was running and using tools. Success."
+                    );
                 } else {
-                     panic!("Agent run failed: {}", e);
+                    panic!("Agent run failed: {}", e);
                 }
             }
         }

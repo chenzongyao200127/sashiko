@@ -1,5 +1,5 @@
 use crate::baseline::{BaselineRegistry, BaselineResolution, extract_files_from_diff};
-use crate::db::Database;
+use crate::db::{Database, ReviewExperimentParams};
 use crate::git_ops::{ensure_remote, get_commit_hash};
 use crate::settings::Settings;
 use anyhow::Result;
@@ -191,15 +191,15 @@ impl Reviewer {
                                     error!("{}", msg);
                                     // Record skipped experiment
                                     if let Err(e) = db
-                                        .create_review_experiment(
+                                        .create_review_experiment(ReviewExperimentParams {
                                             patchset_id,
-                                            &settings.ai.provider,
-                                            &settings.ai.model,
-                                            None,
-                                            None,
-                                            &msg,
-                                            None,
-                                        )
+                                            provider: &settings.ai.provider,
+                                            model: &settings.ai.model,
+                                            prompts_hash: None,
+                                            baseline_id: None,
+                                            result_description: &msg,
+                                            interaction_id: None,
+                                        })
                                         .await
                                     {
                                         error!("Failed to record fetch failure: {}", e);
@@ -281,15 +281,15 @@ impl Reviewer {
 
                     // Record Experiment
                     if let Err(e) = db
-                        .create_review_experiment(
+                        .create_review_experiment(ReviewExperimentParams {
                             patchset_id,
-                            &settings.ai.provider,
-                            &settings.ai.model,
-                            prompts_hash.as_deref(),
+                            provider: &settings.ai.provider,
+                            model: &settings.ai.model,
+                            prompts_hash: prompts_hash.as_deref(),
                             baseline_id,
-                            &description,
-                            None,
-                        )
+                            result_description: &description,
+                            interaction_id: None,
+                        })
                         .await
                     {
                         error!(
