@@ -332,10 +332,10 @@ impl Ingestor {
     ) -> Result<usize> {
         info!("Starting Git Ingestion from {:?}", path);
 
-        // 1. Get list of all object SHAs
-        info!("Listing git objects...");
-        let mut command = Command::new("git");
-        command
+        // 1. Start git rev-list (Producer)
+        info!("Starting object enumeration...");
+        let mut rev_list_cmd = Command::new("git");
+        rev_list_cmd
             .arg("-c")
             .arg("safe.bareRepository=all")
             .current_dir(path)
@@ -344,28 +344,23 @@ impl Ingestor {
             .arg("--objects");
 
         if let Some(n) = limit {
-            command.arg(format!("--max-count={}", n));
+            rev_list_cmd.arg(format!("--max-count={}", n));
         }
 
-        let output = command.output().await?;
+        // IMPORTANT: kill_on_drop ensure process is killed if the future is cancelled (Ctrl-C)
+        rev_list_cmd.kill_on_drop(true);
+        rev_list_cmd.stdout(Stdio::piped());
 
-        if !output.status.success() {
-            return Err(anyhow!(
-                "Failed to list git objects: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
+        let mut rev_list_child = rev_list_cmd.spawn()?;
+        let rev_list_stdout = rev_list_child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Failed to open stdout for git rev-list"))?;
+        let mut rev_list_reader = BufReader::new(rev_list_stdout).lines();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let shas: Vec<String> = stdout
-            .lines()
-            .filter_map(|line| line.split_whitespace().next().map(|s| s.to_string()))
-            .collect();
-
-        info!("Found {} objects. Starting batch processing...", shas.len());
-
-        // 2. Start git cat-file --batch
-        let mut child = Command::new("git")
+        // 2. Start git cat-file --batch (Consumer)
+        let mut cat_file_cmd = Command::new("git");
+        cat_file_cmd
             .arg("-c")
             .arg("safe.bareRepository=all")
             .current_dir(path)
@@ -373,30 +368,39 @@ impl Ingestor {
             .arg("--batch")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()?;
+            .kill_on_drop(true); // Ensure cleanup
 
-        let mut stdin = child
+        let mut cat_file_child = cat_file_cmd.spawn()?;
+        let mut cat_stdin = cat_file_child
             .stdin
             .take()
             .ok_or_else(|| anyhow!("Failed to open stdin for git cat-file"))?;
-        let stdout = child
+        let cat_stdout = cat_file_child
             .stdout
             .take()
             .ok_or_else(|| anyhow!("Failed to open stdout for git cat-file"))?;
-        let mut reader = BufReader::new(stdout);
+        let mut cat_reader = BufReader::new(cat_stdout);
 
         let mut count = 0;
         let mut processed_blobs = 0;
 
-        for hash in shas {
-            // Write SHA to stdin
-            stdin.write_all(format!("{}\n", hash).as_bytes()).await?;
-            stdin.flush().await?;
+        // 3. Stream: rev-list -> cat-file -> application
+        while let Ok(Some(line)) = rev_list_reader.next_line().await {
+            let hash = line
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| anyhow!("Invalid rev-list output: {}", line))?;
+
+            // Write SHA to cat-file
+            cat_stdin
+                .write_all(format!("{}\n", hash).as_bytes())
+                .await?;
+            cat_stdin.flush().await?;
 
             // Read header: <sha> <type> <size>
             let mut header = String::new();
-            if reader.read_line(&mut header).await? == 0 {
-                break; // EOF
+            if cat_reader.read_line(&mut header).await? == 0 {
+                break; // Unexpected EOF from cat-file
             }
 
             let parts: Vec<&str> = header.split_whitespace().collect();
@@ -410,11 +414,11 @@ impl Ingestor {
 
             // Read content + newline
             let mut content = vec![0u8; size];
-            reader.read_exact(&mut content).await?;
+            cat_reader.read_exact(&mut content).await?;
 
             // Consume the trailing newline that --batch outputs
             let mut newline = [0u8; 1];
-            reader.read_exact(&mut newline).await?;
+            cat_reader.read_exact(&mut newline).await?;
 
             if obj_type == "blob" {
                 // Convert raw to lines for the 'content' field (legacy)
@@ -424,7 +428,7 @@ impl Ingestor {
                 self.sender
                     .send(Event::ArticleFetched {
                         group: group_name.to_string(),
-                        article_id: hash.clone(),
+                        article_id: hash.to_string(),
                         content: lines,
                         raw: Some(content),
                     })
