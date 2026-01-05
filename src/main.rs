@@ -141,25 +141,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("DB Worker started");
 
         let mut buffer = Vec::with_capacity(100);
+        let mut total_processed = 0;
+        let mut total_ingested = 0;
+        let mut total_skipped = 0;
+        let mut total_errors = 0;
+
         loop {
             let count = parsed_rx.recv_many(&mut buffer, 100).await;
             if count == 0 {
                 break;
             }
 
-            info!("Processing batch of {} parsed articles", count);
+            // info!("Processing batch of {} parsed articles", count); // Too verbose
             if let Err(e) = worker_db.begin_transaction().await {
                 error!("Failed to begin transaction: {}", e);
+                total_errors += count; // Assume all failed if txn fails? Or just log error.
+                continue;
             }
 
             for article in buffer.drain(..) {
-                process_parsed_article(&worker_db, article).await;
+                match process_parsed_article(&worker_db, article).await {
+                    ProcessStatus::Ingested => total_ingested += 1,
+                    ProcessStatus::Skipped => total_skipped += 1,
+                    ProcessStatus::Error => total_errors += 1,
+                }
+                total_processed += 1;
+
+                if total_processed % 500 == 0 {
+                    info!(
+                        "Ingestion Progress: {} processed ({} ingested, {} skipped, {} errors)",
+                        total_processed, total_ingested, total_skipped, total_errors
+                    );
+                }
             }
 
             if let Err(e) = worker_db.commit_transaction().await {
                 error!("Failed to commit transaction: {}", e);
+                // If commit fails, technically we lost the batch work in DB, but counters are already updated.
+                // For simple stats, this is acceptable, but ideally we'd track "pending" stats.
+                // Keeping it simple.
             }
         }
+
+        // Final stats
+        info!(
+            "Ingestion Complete: {} processed ({} ingested, {} skipped, {} errors)",
+            total_processed, total_ingested, total_skipped, total_errors
+        );
     });
 
     // Start Ingestor (feeds raw_tx)
@@ -203,7 +231,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) {
+enum ProcessStatus {
+    Ingested,
+    Skipped,
+    Error,
+}
+
+async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) -> ProcessStatus {
     let ParsedArticle {
         group,
         article_id,
@@ -221,7 +255,7 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) {
             Ok(tid) => tid,
             Err(e) => {
                 error!("Failed to ensure thread for parent {}: {}", reply_to, e);
-                return;
+                return ProcessStatus::Error;
             }
         }
     } else {
@@ -235,7 +269,7 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) {
                     "Failed to ensure thread for self {}: {}",
                     metadata.message_id, e
                 );
-                return;
+                return ProcessStatus::Error;
             }
         }
     };
@@ -265,6 +299,7 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) {
         .await
     {
         error!("Failed to create message: {}", e);
+        return ProcessStatus::Error;
     }
 
     // Subsystem Identification and Linking
@@ -291,12 +326,6 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) {
         }
     }
 
-    let subject = if metadata.subject.len() > 80 {
-        format!("{}...", &metadata.subject[..77])
-    } else {
-        metadata.subject.clone()
-    };
-
     // Detect baseline
     let baseline = crate::baseline::detect_baseline(
         &metadata.subject,
@@ -322,10 +351,18 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) {
         _ => None,
     };
 
+    // Removed per-article info log
+    /*
+    let subject = if metadata.subject.len() > 80 {
+        format!("{}...", &metadata.subject[..77])
+    } else {
+        metadata.subject.clone()
+    };
     info!(
         "Article: group={}, id={}, author={}, subject=\"{}\"",
         group, article_id, metadata.author, subject
     );
+    */
 
     let cover_letter_id = if metadata.index == 0 {
         Some(metadata.message_id.as_str())
@@ -377,25 +414,26 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) {
                                 }
                             }
                         }
-                        Err(e) => error!("Failed to save patch: {}", e),
+                        Err(e) => {
+                            error!("Failed to save patch: {}", e);
+                            return ProcessStatus::Error;
+                        }
                     }
                 }
+                ProcessStatus::Ingested
             }
             Ok(None) => {
-                info!(
-                    "Skipped patchset creation (reply mismatch or duplicate) for {}",
-                    metadata.message_id
-                );
+                // Skipped patchset creation (reply mismatch or duplicate)
+                ProcessStatus::Skipped
             }
             Err(e) => {
                 error!("Failed to save patchset: {}", e);
+                ProcessStatus::Error
             }
         }
     } else {
-        info!(
-            "Skipped patchset creation/update for non-patch message: {}",
-            metadata.message_id
-        );
+        // Skipped patchset creation/update for non-patch message
+        ProcessStatus::Skipped
     }
 }
 
