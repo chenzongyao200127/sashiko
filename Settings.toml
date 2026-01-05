@@ -19,5 +19,5 @@ port = 8080
 repository_path = "linux"
 
 [review]
-concurrency = 20
+concurrency = 5
 worktree_dir = "review_trees"
