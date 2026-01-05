@@ -6,6 +6,9 @@ use tokio::sync::Semaphore;
 use tracing::{info, error, warn};
 use crate::db::Database;
 use crate::settings::Settings;
+use serde_json::json;
+use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
 
 pub struct Reviewer {
     db: Arc<Database>,
@@ -59,7 +62,6 @@ impl Reviewer {
 
     async fn process_pending_patchsets(&self) -> Result<()> {
         // Fetch pending patchsets
-        // We look for 'Pending' status.
         let patchsets = self.db.get_pending_patchsets(10).await?;
 
         if patchsets.is_empty() {
@@ -73,28 +75,39 @@ impl Reviewer {
             let db = self.db.clone();
             let settings = self.settings.clone();
             let patchset_id = patchset.id;
+            let subject = patchset.subject.clone().unwrap_or("Unknown".to_string());
 
             tokio::spawn(async move {
-                // Move permit into the task so it's dropped when task finishes
                 let _permit = permit;
                 
                 info!("Starting review for patchset {}", patchset_id);
-                
-                // Update status to 'Reviewing' to avoid double processing?
-                // Or just rely on the fact we grabbed it? 
-                // Better to update status. But we don't have 'Reviewing' status in schema yet.
-                // Assuming 'Pending' means ready. We should add 'Reviewing' or similar.
-                // For now, let's keep it 'Pending' but maybe we need to be careful.
-                // Actually, if we pick 10 and spawn 10 tasks, next loop might pick them again if they are still 'Pending'.
-                // We MUST update status to something else.
-                // Let's use 'Reviewing'. (Need to ensure schema allows it or just use it if text).
                 
                 if let Err(e) = db.update_patchset_status(patchset_id, "Reviewing").await {
                     error!("Failed to update status to Reviewing for {}: {}", patchset_id, e);
                     return;
                 }
 
-                match run_review_tool(patchset_id, &settings).await {
+                // Fetch patches/diffs to pass to tool
+                let diffs = match db.get_patch_diffs(patchset_id).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        error!("Failed to fetch diffs for {}: {}", patchset_id, e);
+                        let _ = db.update_patchset_status(patchset_id, "Failed").await;
+                        return;
+                    }
+                };
+
+                let patches_json: Vec<_> = diffs.into_iter().map(|(idx, diff)| {
+                    json!({ "index": idx, "diff": diff })
+                }).collect();
+
+                let input_payload = json!({
+                    "id": patchset_id,
+                    "subject": subject,
+                    "patches": patches_json
+                });
+
+                match run_review_tool(&input_payload, &settings).await {
                     Ok(status) => {
                         info!("Review finished for {}: {}", patchset_id, status);
                         if let Err(e) = db.update_patchset_status(patchset_id, &status).await {
@@ -115,44 +128,53 @@ impl Reviewer {
     }
 }
 
-async fn run_review_tool(patchset_id: i64, settings: &Settings) -> Result<String> {
-    // Run the binary: cargo run --bin review -- --patchset ID --baseline next/master --worktree-parent DIR
-    // But we are running from binary, so we should look for the executable or run cargo run if dev.
-    // Assuming development environment:
-    
-    // We need to add --worktree-parent to review tool first!
-    // For now, let's assume review tool uses a temp dir by default.
-    // The user requirement: "Make sure reviewer tools are creating worktrees in some subfolder".
-    // So I need to modify `review.rs` to accept this arg.
-    
-    // Let's assume I will add `--worktree-dir` to `review.rs`.
-    
-    let output = Command::new("cargo")
-        .args([
-            "run", "--bin", "review", "--",
-            "--patchset", &patchset_id.to_string(),
-            "--baseline", "next/master", // Defaulting to next/master
-            "--worktree-dir", &settings.review.worktree_dir,
-            // Assuming we disable AI for now as per previous context or enable it?
-            // "Integrate the reviewer tool... If patchset successfully applied..."
-            // It implies we care about application status mainly for now.
-        ])
-        .output()
-        .await?;
+async fn run_review_tool(input_payload: &serde_json::Value, settings: &Settings) -> Result<String> {
+    let exe_path = std::env::current_exe()?;
+    let bin_dir = exe_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let review_bin = bin_dir.join("review");
+
+    let mut cmd = if review_bin.exists() {
+        Command::new(review_bin)
+    } else {
+        warn!("Could not find review binary at {:?}, falling back to cargo run", review_bin);
+        let mut c = Command::new("cargo");
+        c.args(["run", "--bin", "review", "--"]);
+        c
+    };
+
+    cmd.args([
+        "--json", // Use JSON mode
+        "--baseline", "HEAD", 
+        "--worktree-dir", &settings.review.worktree_dir,
+    ]);
+
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn()?;
+
+    // Write input JSON to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        let input_str = serde_json::to_string(input_payload)?;
+        stdin.write_all(input_str.as_bytes()).await?;
+    }
+
+    let output = child.wait_with_output().await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("Review tool failed for {}: {}", patchset_id, stderr);
+        warn!("Review tool failed (exit code {:?}): {}", output.status.code(), stderr);
         return Ok("Failed".to_string());
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     
-    // Parse JSON
+    // Parse JSON output
     let json: serde_json::Value = serde_json::from_str(&stdout)?;
     
     // Check if all patches applied
-    let patches = json["patches"].as_array().unwrap();
+    let patches = json["patches"].as_array().ok_or_else(|| anyhow::anyhow!("Invalid output JSON: no patches"))?;
     let all_applied = patches.iter().all(|p| p["status"] == "applied");
 
     if all_applied {
