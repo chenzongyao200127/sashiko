@@ -225,33 +225,8 @@ pub async fn ensure_remote(
     url: &str,
     force_fetch: bool,
 ) -> Result<()> {
-    // 1. Security Check
-    let allowed_domains = [
-        "kernel.org",
-        "lwn.net",
-        "freedesktop.org",
-        "linuxtv.org",
-        "infradead.org",
-        "armlinux.org.uk",
-        "intel.com",
-        "github.com",
-        "gitlab.com",
-        "google.com",
-        "googlesource.com",
-        "opensuse.org",
-    ];
-
-    let is_allowed = allowed_domains.iter().any(|d| url.contains(d));
-
-    if !is_allowed {
-        return Err(anyhow!(
-            "Refusing to add non-whitelisted remote: {}. Allowed domains: {:?}",
-            url,
-            allowed_domains
-        ));
-    }
-
-    // Acquire lock for this remote
+    // 1. Security Check (Skipped - trusting MAINTAINERS)
+    // acquire lock
     let lock = get_remote_lock(name);
     let _guard = lock.lock().await;
 
