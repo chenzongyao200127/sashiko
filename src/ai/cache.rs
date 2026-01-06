@@ -150,11 +150,7 @@ impl CacheManager {
 
         // Create new cache
         // The caching API requires the model name to start with "models/"
-        let model_name = if self.model.starts_with("models/") {
-            self.model.clone()
-        } else {
-            format!("models/{}", self.model)
-        };
+        let model_name = format!("models/{}", self.model);
 
         let request = CreateCachedContentRequest {
             model: model_name,
