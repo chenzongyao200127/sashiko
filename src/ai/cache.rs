@@ -127,18 +127,21 @@ impl CacheManager {
         // Short hash for readability
         let short_hash = &hash[..8];
         let expected_display_name = format!("sashiko-reviewer-v1-{}", short_hash);
+        // The caching API requires the model name to start with "models/"
+        let model_name = format!("models/{}", self.model);
 
         // List existing caches
         let existing = self.client.list_cached_contents().await?;
 
         for cache in existing {
             if let Some(dn) = &cache.display_name {
-                if dn == &expected_display_name {
+                if dn == &expected_display_name && cache.model == model_name {
                     if let Some(name) = cache.name {
                         tracing::info!(
-                            "Found existing cache: {} ({})",
+                            "Found existing cache: {} ({} for {})",
                             name,
-                            expected_display_name
+                            expected_display_name,
+                            model_name
                         );
                         return Ok(name);
                     }
@@ -149,8 +152,7 @@ impl CacheManager {
         tracing::info!("Creating new cache: {}", expected_display_name);
 
         // Create new cache
-        // The caching API requires the model name to start with "models/"
-        let model_name = format!("models/{}", self.model);
+        // model_name is already defined above
 
         let request = CreateCachedContentRequest {
             model: model_name,
@@ -263,5 +265,104 @@ mod tests {
         assert_eq!(request.ttl, Some("60s".to_string()));
         // Also verify model name is prefixed
         assert_eq!(request.model, "models/gemini-1.5-flash-002");
+    }
+
+    struct MockGenAiClientWithExisting {
+        existing: Vec<CachedContent>,
+        created_request: Arc<Mutex<Option<CreateCachedContentRequest>>>,
+    }
+
+    #[async_trait]
+    impl GenAiClient for MockGenAiClientWithExisting {
+        async fn generate_content(
+            &self,
+            _request: GenerateContentRequest,
+        ) -> Result<GenerateContentResponse> {
+            unimplemented!()
+        }
+
+        async fn create_cached_content(
+            &self,
+            request: CreateCachedContentRequest,
+        ) -> Result<CachedContent> {
+            *self.created_request.lock().unwrap() = Some(request);
+            Ok(CachedContent {
+                name: Some("cachedContents/new".to_string()),
+                display_name: None,
+                model: "models/test".to_string(),
+                system_instruction: None,
+                contents: None,
+                tools: None,
+                create_time: None,
+                update_time: None,
+                expire_time: None,
+                ttl: None,
+            })
+        }
+
+        async fn list_cached_contents(&self) -> Result<Vec<CachedContent>> {
+            Ok(self.existing.clone())
+        }
+
+        async fn generate_content_with_cache(
+            &self,
+            _request: GenerateContentWithCacheRequest,
+        ) -> Result<GenerateContentResponse> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ensure_cache_ignores_wrong_model() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir = temp_dir.path().to_path_buf();
+
+        // Construct the expected context string for an empty dir (assuming no linux docs in CWD)
+        let context_str = "# Linux Kernel Standards\n\n# Subsystem Guidelines\n\n";
+        let mut hasher = Sha256::new();
+        hasher.update(context_str);
+        // Tools are None
+        let hash = format!("{:x}", hasher.finalize());
+        let short_hash = &hash[..8];
+        let expected_dn = format!("sashiko-reviewer-v1-{}", short_hash);
+
+        let wrong_model_cache = CachedContent {
+            name: Some("cachedContents/wrong".to_string()),
+            display_name: Some(expected_dn.clone()),
+            model: "models/gemini-wrong".to_string(), // Mismatch
+            system_instruction: None,
+            contents: None,
+            tools: None,
+            create_time: None,
+            update_time: None,
+            expire_time: None,
+            ttl: None,
+        };
+
+        let captured = Arc::new(Mutex::new(None));
+        let mock_client = MockGenAiClientWithExisting {
+            existing: vec![wrong_model_cache],
+            created_request: captured.clone(),
+        };
+
+        let manager = CacheManager::new(
+            base_dir,
+            Box::new(mock_client),
+            "gemini-right".to_string(),
+            "60s".to_string(),
+            None,
+        );
+
+        // This should trigger creation because existing cache has wrong model
+        let res = manager.ensure_cache().await;
+        assert!(res.is_ok());
+
+        let request = captured
+            .lock()
+            .unwrap()
+            .take()
+            .expect("create_cached_content SHOULD be called when model mismatches");
+        
+        assert_eq!(request.model, "models/gemini-right");
     }
 }
