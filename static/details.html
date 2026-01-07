@@ -339,9 +339,9 @@
                     
                     listHtml += `
                         <li style="margin-left: 20px; padding: 2px;">
-                            <span style="color: #666; font-family: monospace;">[${mDate}]</span> 
+                            ${arrow}<span style="color: #666; font-family: monospace;">[${mDate}]</span> 
                             ${m.author || 'unknown'}: 
-                            ${arrow}<a href="/static/message.html?id=${m.id}">
+                            <a href="/static/message.html?id=${m.id}">
                                ${m.subject || '(no subject)'}
                             </a>
                     `;
