@@ -22,6 +22,7 @@ pub struct Worker {
     prompts: PromptRegistry,
     history: Vec<Content>,
     max_input_words: usize,
+    max_interactions: usize,
     cache_name: Option<String>,
 }
 
@@ -40,6 +41,7 @@ impl Worker {
         tools: ToolBox,
         prompts: PromptRegistry,
         max_input_words: usize,
+        max_interactions: usize,
         cache_name: Option<String>,
     ) -> Self {
         Self {
@@ -48,6 +50,7 @@ impl Worker {
             prompts,
             history: Vec::new(),
             max_input_words,
+            max_interactions,
             cache_name,
         }
     }
@@ -165,16 +168,15 @@ impl Worker {
         });
 
         let mut turns = 0;
-        const MAX_TURNS: usize = 25;
         let mut total_tokens_in = 0;
         let mut total_tokens_out = 0;
 
         loop {
             turns += 1;
-            if turns > MAX_TURNS {
+            if turns > self.max_interactions {
                 return Ok(WorkerResult {
                     output: None,
-                    error: Some(format!("Worker exceeded maximum turns ({})", MAX_TURNS)),
+                    error: Some(format!("Worker exceeded maximum turns ({})", self.max_interactions)),
                     input_context,
                     history: self.history.clone(),
                     tokens_in: total_tokens_in,

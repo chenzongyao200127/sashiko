@@ -225,6 +225,7 @@ async fn main() -> Result<()> {
                 tools,
                 prompts,
                 settings.ai.max_input_words,
+                settings.ai.max_interactions,
                 args.gemini_cache,
             );
 

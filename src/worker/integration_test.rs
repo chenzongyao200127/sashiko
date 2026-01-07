@@ -153,7 +153,7 @@ mod tests {
 
         let tools = ToolBox::new(linux_path);
         let prompts = PromptRegistry::new(PathBuf::from("review-prompts"));
-        let mut worker = Worker::new(client, tools, prompts, 150_000, None);
+        let mut worker = Worker::new(client, tools, prompts, 150_000, 25, None);
 
         let patchset = json!({
             "subject": "Test Patch",
@@ -190,7 +190,7 @@ mod tests {
 
         let tools = ToolBox::new(linux_path);
         let prompts = PromptRegistry::new(PathBuf::from("review-prompts"));
-        let mut worker = Worker::new(client, tools, prompts, 150_000, None);
+        let mut worker = Worker::new(client, tools, prompts, 150_000, 25, None);
 
         let patchset = json!({
             "subject": "Docs update",

@@ -29,12 +29,18 @@ pub struct AiSettings {
     pub max_input_words: usize,
     #[serde(default = "default_rate_limit_tokens_per_minute")]
     pub rate_limit_tokens_per_minute: usize,
+    #[serde(default = "default_max_interactions")]
+    pub max_interactions: usize,
     #[serde(skip, default)]
     pub no_ai: bool,
 }
 
 fn default_rate_limit_tokens_per_minute() -> usize {
     900_000
+}
+
+fn default_max_interactions() -> usize {
+    25
 }
 
 #[derive(Debug, Deserialize, Clone)]
