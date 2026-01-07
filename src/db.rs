@@ -190,9 +190,10 @@ impl Database {
         if let Ok(Some(row)) = rows.next().await {
             let body: Option<String> = row.get(0).ok();
             if let Some(b) = body
-                && !b.is_empty() {
-                    return Ok(Some(b));
-                }
+                && !b.is_empty()
+            {
+                return Ok(Some(b));
+            }
             // Try git blob
             let hash: Option<String> = row.get(1).ok();
             let group: Option<String> = row.get(2).ok();
@@ -467,12 +468,13 @@ impl Database {
                 )
                 .await;
             if let Ok(mut c_rows) = count_rows
-                && let Ok(Some(c_row)) = c_rows.next().await {
-                    let count: i64 = c_row.get(0)?;
-                    if count > 0 {
-                        continue;
-                    }
+                && let Ok(Some(c_row)) = c_rows.next().await
+            {
+                let count: i64 = c_row.get(0)?;
+                if count > 0 {
+                    continue;
                 }
+            }
 
             // Parse logs (simple JSON array parsing)
             if let Ok(history) = serde_json::from_str::<Vec<serde_json::Value>>(&logs) {
@@ -971,62 +973,63 @@ impl Database {
     ) -> Result<()> {
         // Check for thread merge (Thread split resolution)
         if let Ok(Some(old_thread_id)) = self.get_thread_id_for_message(message_id).await
-            && old_thread_id != thread_id {
-                info!("Merging thread {} into {}", old_thread_id, thread_id);
-                // 1. Move messages
-                self.conn
-                    .execute(
-                        "UPDATE messages SET thread_id = ? WHERE thread_id = ?",
-                        libsql::params![thread_id, old_thread_id],
-                    )
-                    .await?;
+            && old_thread_id != thread_id
+        {
+            info!("Merging thread {} into {}", old_thread_id, thread_id);
+            // 1. Move messages
+            self.conn
+                .execute(
+                    "UPDATE messages SET thread_id = ? WHERE thread_id = ?",
+                    libsql::params![thread_id, old_thread_id],
+                )
+                .await?;
 
-                // 2. Move patchsets
-                self.conn
-                    .execute(
-                        "UPDATE patchsets SET thread_id = ? WHERE thread_id = ?",
-                        libsql::params![thread_id, old_thread_id],
-                    )
-                    .await?;
+            // 2. Move patchsets
+            self.conn
+                .execute(
+                    "UPDATE patchsets SET thread_id = ? WHERE thread_id = ?",
+                    libsql::params![thread_id, old_thread_id],
+                )
+                .await?;
 
-                // 3. Merge subsystems
-                self.conn
-                    .execute(
-                        "UPDATE OR IGNORE threads_subsystems SET thread_id = ? WHERE thread_id = ?",
-                        libsql::params![thread_id, old_thread_id],
-                    )
-                    .await?;
-                // Delete any remaining (conflicting) subsystem mappings for the old thread
-                self.conn
-                    .execute(
-                        "DELETE FROM threads_subsystems WHERE thread_id = ?",
-                        libsql::params![old_thread_id],
-                    )
-                    .await?;
+            // 3. Merge subsystems
+            self.conn
+                .execute(
+                    "UPDATE OR IGNORE threads_subsystems SET thread_id = ? WHERE thread_id = ?",
+                    libsql::params![thread_id, old_thread_id],
+                )
+                .await?;
+            // Delete any remaining (conflicting) subsystem mappings for the old thread
+            self.conn
+                .execute(
+                    "DELETE FROM threads_subsystems WHERE thread_id = ?",
+                    libsql::params![old_thread_id],
+                )
+                .await?;
 
-                // 4. Merge tags
-                self.conn
-                    .execute(
-                        "UPDATE OR IGNORE threads_tags SET thread_id = ? WHERE thread_id = ?",
-                        libsql::params![thread_id, old_thread_id],
-                    )
-                    .await?;
-                // Delete any remaining (conflicting) tag mappings for the old thread
-                self.conn
-                    .execute(
-                        "DELETE FROM threads_tags WHERE thread_id = ?",
-                        libsql::params![old_thread_id],
-                    )
-                    .await?;
+            // 4. Merge tags
+            self.conn
+                .execute(
+                    "UPDATE OR IGNORE threads_tags SET thread_id = ? WHERE thread_id = ?",
+                    libsql::params![thread_id, old_thread_id],
+                )
+                .await?;
+            // Delete any remaining (conflicting) tag mappings for the old thread
+            self.conn
+                .execute(
+                    "DELETE FROM threads_tags WHERE thread_id = ?",
+                    libsql::params![old_thread_id],
+                )
+                .await?;
 
-                // 5. Delete old thread
-                self.conn
-                    .execute(
-                        "DELETE FROM threads WHERE id = ?",
-                        libsql::params![old_thread_id],
-                    )
-                    .await?;
-            }
+            // 5. Delete old thread
+            self.conn
+                .execute(
+                    "DELETE FROM threads WHERE id = ?",
+                    libsql::params![old_thread_id],
+                )
+                .await?;
+        }
 
         // Use INSERT OR REPLACE to handle updating placeholders
         // But we want to preserve thread_id if it was set by placeholder (which is correct).
@@ -1206,6 +1209,38 @@ impl Database {
                     )
                     .await?;
 
+                // Reassign reviews
+                self.conn
+                    .execute(
+                        "UPDATE reviews SET patchset_id = ? WHERE patchset_id = ?",
+                        libsql::params![target_id, merge_from_id],
+                    )
+                    .await?;
+
+                // Merge subsystems
+                self.conn
+                    .execute(
+                        "INSERT OR IGNORE INTO patchsets_subsystems (patchset_id, subsystem_id)
+                         SELECT ?, subsystem_id FROM patchsets_subsystems WHERE patchset_id = ?",
+                        libsql::params![target_id, merge_from_id],
+                    )
+                    .await?;
+                self.conn
+                    .execute(
+                        "DELETE FROM patchsets_subsystems WHERE patchset_id = ?",
+                        libsql::params![merge_from_id],
+                    )
+                    .await?;
+
+                // Merge tags
+                self.conn
+                    .execute(
+                        "INSERT OR IGNORE INTO patchsets_tags (patchset_id, tag_id)
+                         SELECT ?, tag_id FROM patchsets_tags WHERE patchset_id = ?",
+                        libsql::params![target_id, merge_from_id],
+                    )
+                    .await?;
+
                 // If the merged patchset had a better subject index, track it
                 if *merge_subject_index < current_subject_index {
                     current_subject_index = *merge_subject_index;
@@ -1334,14 +1369,15 @@ impl Database {
 
         // Update received_parts for the OLD patchset (if we moved it)
         if let Some(old_id) = old_patchset_id
-            && old_id != patchset_id {
-                self.conn
+            && old_id != patchset_id
+        {
+            self.conn
                     .execute(
                         "UPDATE patchsets SET received_parts = (SELECT COUNT(*) FROM patches WHERE patchset_id = ?) WHERE id = ?",
                         libsql::params![old_id, old_id],
                     )
                     .await?;
-            }
+        }
 
         // Check if complete and update status
         // We only transition from 'Incomplete' to 'Pending' (ready for review)
