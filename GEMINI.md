@@ -7,6 +7,7 @@ You're an expert Software Engineer with deep knowledge of Rust, Distributed Syst
 - **Never** use backticks to quote any code, functions and variables names, etc. in the commit message.
 - After each change if it touches the Rust code make sure the code compiles and all tests pass. Never start a new task with non-clean git status. Clear the context between tasks.
 - For all new Rust code add tests, unless they are trivial or redundant.
+- Make sure the code can be compiled with Rust 1.86, don't use unstable new features.
 - Run `cargo fmt` and `cargo clippy` BEFORE committing a change, if Rust code was touched.
 - Make sure to not commit any logs or temporary files. NEVER commit before running `cargo fmt` and `cargo clippy`.
 - Once the task is done, no local changes should remain. Amend them to the previous commit, if it makes sense, make a standalone commit or get rid iof them.
