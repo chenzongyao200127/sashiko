@@ -134,15 +134,12 @@
             border: none; 
         }
         .status-badge::before {
-            content: '';
+            content: '#';
             display: block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background-color: currentColor;
+            color: currentColor;
         }
         .status-Pending { color: #0366d6; }
-        .status-Applying, .status-Analyzing, .status-Reviewing { color: #b08800; }
+        .status-Applying, .status-Analyzing, .status-Reviewing { color: #d67f05; }
         .status-Finished, .status-Applied, .status-Reviewed { color: #22863a; }
         .status-Failed { color: #d73a49; }
         .status-Incomplete { color: #6a737d; }
