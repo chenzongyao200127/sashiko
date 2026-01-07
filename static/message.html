@@ -184,16 +184,17 @@
 
             let html = '<ul style="list-style: none; padding-left: 0;">';
             
-            function renderNode(m) {
+            function renderNode(m, depth) {
                 const isCurrent = m.id === currentMsgId;
                 const style = isCurrent ? 'font-weight: bold; background-color: #eef;' : '';
                 const mDate = m.date ? new Date(m.date * 1000).toLocaleDateString() : '-';
+                const arrow = depth > 0 ? '↳ ' : '';
                 
                 html += `
                     <li style="margin-left: 20px; padding: 2px;">
                         <span style="color: #666; font-family: monospace;">[${mDate}]</span> 
                         ${m.author || 'unknown'}: 
-                        <a href="/static/message.html?id=${m.id}" style="${style}">
+                        ${arrow}<a href="/static/message.html?id=${m.id}" style="${style}">
                            ${m.subject || '(no subject)'}
                         </a>
                 `;
@@ -201,13 +202,13 @@
                 const children = childrenMap.get(m.message_id) || [];
                 if (children.length > 0) {
                     html += '<ul style="list-style: none; padding-left: 0;">';
-                    children.forEach(c => renderNode(c));
+                    children.forEach(c => renderNode(c, depth + 1));
                     html += '</ul>';
                 }
                 html += '</li>';
             }
 
-            roots.forEach(r => renderNode(r));
+            roots.forEach(r => renderNode(r, 0));
             html += '</ul>';
             
             document.getElementById('thread-tree').innerHTML = html;

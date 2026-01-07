@@ -62,6 +62,8 @@
         .trace-entry { margin-bottom: 8px; }
         .trace-role { font-weight: bold; color: #444; margin-bottom: 2px; }
         .trace-content { white-space: pre-wrap; font-family: inherit; }
+        .patch-link { color: black; text-decoration: none; }
+        .patch-link:hover { text-decoration: none; color: black; }
     </style>
 </head>
 <body>
@@ -287,6 +289,7 @@
                 const patch = patchMap.get(pid);
                 const reviews = reviewsByPatch.get(pid);
                 const patchLabel = patch ? `Patch ${patch.part_index}: ${patch.subject || '(no subject)'}` : `Patch ID ${pid}`;
+                const patchLink = patch && patch.msg_db_id ? `/static/message.html?id=${patch.msg_db_id}` : '#';
                 
                 // Calculate total tokens for this patch
                 let totalTokensPatch = 0;
@@ -297,7 +300,7 @@
                 reviewsHtml += `
                     <div style="margin-top: 20px; ${borderStyle}">
                         <h3 style="display:flex; justify-content:space-between;">
-                            <span>${escapeHtml(patchLabel)}</span>
+                            <a href="${patchLink}" class="patch-link">${escapeHtml(patchLabel)}</a>
                             <span style="font-size:0.8em; font-weight:normal; color:#666;">Total Tokens: ${totalTokensPatch.toLocaleString()}</span>
                         </h3>
                         ${renderReviewList(reviews)}
@@ -307,23 +310,6 @@
 
             if (!reviewsHtml) {
                 reviewsHtml = '<p>No AI reviews yet.</p>';
-            }
-
-            let patchesHtml = '';
-            if (data.patches && data.patches.length > 0) {
-                 patchesHtml = `
-                    <div class="kv" style="align-items: flex-start;">
-                        <div class="label">Patches:</div>
-                        <div>
-                            ${data.patches.map(p => {
-                                const link = p.msg_db_id ? `<a href="/static/message.html?id=${p.msg_db_id}">${p.subject || '(no subject)'}</a>` : (p.subject || p.message_id);
-                                return `<div>${p.part_index}: ${link}</div>`;
-                            }).join('')}
-                        </div>
-                    </div>
-                 `;
-            } else {
-                patchesHtml = '<div class="kv"><div class="label">Patches:</div><div>None</div></div>';
             }
 
             let threadHtml = '';
@@ -346,42 +332,33 @@
                     }
                 });
 
-                let rowsHtml = '';
+                let listHtml = '<ul style="list-style: none; padding-left: 0;">';
                 function renderNode(m, depth) {
-                    const mDate = m.date ? new Date(m.date * 1000).toLocaleString() : '-';
-                    const indent = depth * 20;
-                    const marker = depth > 0 ? '↳ ' : '';
+                    const mDate = m.date ? new Date(m.date * 1000).toLocaleDateString() : '-';
+                    const arrow = depth > 0 ? '↳ ' : '';
                     
-                    rowsHtml += `
-                        <tr>
-                            <td>${mDate}</td>
-                            <td>${m.author || 'unknown'}</td>
-                            <td style="padding-left: ${indent + 8}px">
-                                ${marker}<a href="/static/message.html?id=${m.id}">${m.subject || '(no subject)'}</a>
-                            </td>
-                        </tr>
+                    listHtml += `
+                        <li style="margin-left: 20px; padding: 2px;">
+                            <span style="color: #666; font-family: monospace;">[${mDate}]</span> 
+                            ${m.author || 'unknown'}: 
+                            ${arrow}<a href="/static/message.html?id=${m.id}">
+                               ${m.subject || '(no subject)'}
+                            </a>
                     `;
 
                     const children = childrenMap.get(m.message_id) || [];
-                    children.forEach(c => renderNode(c, depth + 1));
+                    if (children.length > 0) {
+                        listHtml += '<ul style="list-style: none; padding-left: 0;">';
+                        children.forEach(c => renderNode(c, depth + 1));
+                        listHtml += '</ul>';
+                    }
+                    listHtml += '</li>';
                 }
 
                 roots.forEach(r => renderNode(r, 0));
+                listHtml += '</ul>';
 
-                threadHtml = `
-                    <table class="reviews-table">
-                         <thead>
-                            <tr>
-                                <th>Date</th>
-                                <th>Author</th>
-                                <th>Subject</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${rowsHtml}
-                        </tbody>
-                    </table>
-                `;
+                threadHtml = listHtml;
             } else {
                 threadHtml = '<p>No thread history found.</p>';
             }
@@ -394,7 +371,6 @@
                     <div class="kv"><div class="label">Date:</div><div>${date}</div></div>
                     <div class="kv"><div class="label">Subsystems:</div><div>${data.subsystems && data.subsystems.length > 0 ? data.subsystems.map(s => `<span class="tag">${s}</span>`).join('') : '-'}</div></div>
                     <div class="kv"><div class="label">Patches received:</div><div>${data.received_parts || 0} / ${data.total_parts || 0}</div></div>
-                    ${patchesHtml}
                 </div>
 
                 <div class="section">
