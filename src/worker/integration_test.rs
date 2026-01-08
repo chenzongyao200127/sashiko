@@ -239,4 +239,37 @@ mod tests {
         let review = result.output.expect("No output");
         assert_eq!(review["summary"], "README is good");
     }
+
+    #[tokio::test]
+    async fn test_worker_loop_detection() {
+        let _ = tracing_subscriber::fmt::try_init();
+        let (linux_path, _prompts_path) = get_test_paths();
+
+        let client = Box::new(StatefulMockClient::new(vec![
+            create_tool_call_response("read_files", json!({ "files": [{ "path": "README" }] })),
+            create_tool_call_response("read_files", json!({ "files": [{ "path": "README" }] })),
+            create_tool_call_response("read_files", json!({ "files": [{ "path": "README" }] })),
+        ]));
+
+        let tools = ToolBox::new(linux_path);
+        let prompts = PromptRegistry::new(PathBuf::from("review-prompts"));
+        let mut worker = Worker::new(client, tools, prompts, 150_000, 25, None);
+
+        let patchset = json!({
+            "subject": "Loop Test",
+            "author": "Test",
+            "patches": []
+        });
+
+        let result = worker
+            .run(patchset)
+            .await
+            .expect("Worker run failed (should return Ok with error field)");
+
+        assert!(result.output.is_none());
+        assert!(result.error.is_some());
+        let err_msg = result.error.unwrap();
+        assert!(err_msg.contains("Loop detected"));
+        assert!(err_msg.contains("read_files"));
+    }
 }

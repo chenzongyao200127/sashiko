@@ -150,6 +150,8 @@ impl Worker {
         let mut turns = 0;
         let mut total_tokens_in = 0;
         let mut total_tokens_out = 0;
+        let mut last_tool_call: Option<(String, Value)> = None;
+        let mut consecutive_tool_count = 0;
 
         loop {
             turns += 1;
@@ -255,6 +257,34 @@ impl Worker {
                     } => {
                         has_calls = true;
                         info!("Tool Call: {} args: {}", call.name, call.args);
+
+                        if let Some((last_name, last_args)) = &last_tool_call {
+                            if *last_name == call.name && *last_args == call.args {
+                                consecutive_tool_count += 1;
+                            } else {
+                                consecutive_tool_count = 1;
+                                last_tool_call = Some((call.name.clone(), call.args.clone()));
+                            }
+                        } else {
+                            consecutive_tool_count = 1;
+                            last_tool_call = Some((call.name.clone(), call.args.clone()));
+                        }
+
+                        if consecutive_tool_count >= 3 {
+                            let error_msg = format!(
+                                "Loop detected: Tool '{}' called with same arguments 3 times in a row. Terminating.",
+                                call.name
+                            );
+                            warn!("{}", error_msg);
+                            return Ok(WorkerResult {
+                                output: None,
+                                error: Some(error_msg),
+                                input_context: input_context.clone(),
+                                history: self.history.clone(),
+                                tokens_in: total_tokens_in,
+                                tokens_out: total_tokens_out,
+                            });
+                        }
 
                         let result = match self.tools.call(&call.name, call.args.clone()).await {
                             Ok(val) => val,
