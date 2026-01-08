@@ -1,11 +1,10 @@
 use crate::ai::gemini::{Content, CreateCachedContentRequest, GenAiClient, Part, Tool};
+use crate::worker::prompts::PromptRegistry;
 use anyhow::{Context, Result};
-use sha2::{Digest, Sha256};
 use std::path::PathBuf;
-use tokio::fs;
 
 pub struct CacheManager {
-    base_dir: PathBuf,
+    prompts: PromptRegistry,
     client: Box<dyn GenAiClient>,
     model: String,
     ttl: String,
@@ -21,7 +20,7 @@ impl CacheManager {
         tools: Option<Vec<Tool>>,
     ) -> Self {
         Self {
-            base_dir,
+            prompts: PromptRegistry::new(base_dir),
             client,
             model,
             ttl,
@@ -29,82 +28,17 @@ impl CacheManager {
         }
     }
 
-    /// Builds the full context string from prompts and docs.
+    /// Builds the full context string from prompts directory.
+    /// Delegates to PromptRegistry.
     async fn build_context(&self) -> Result<String> {
-        let mut context = String::new();
-
-        // 1. System Persona (Prompt + review-core.md)
-        context.push_str("You're an expert Linux kernel developer and maintainer with deep knowledge of Linux, Operating Systems, modern hardware and Linux community standards and processes.\n\n");
-
-        let core_path = self.base_dir.join("review-core.md");
-        if core_path.exists() {
-            context.push_str(&fs::read_to_string(&core_path).await?);
-            context.push_str("\n\n");
-        }
-
-        // 2. Prompt Library
-        context.push_str("# Subsystem Guidelines\n\n");
-
-        // Read root of prompts dir
-        let mut entries = fs::read_dir(&self.base_dir).await?;
-        let mut paths = Vec::new();
-        while let Some(entry) = entries.next_entry().await? {
-            paths.push(entry.path());
-        }
-        paths.sort(); // Deterministic order
-
-        for path in paths {
-            if path.extension().is_some_and(|ext| ext == "md") {
-                let fname = path.file_name().unwrap().to_string_lossy();
-                if fname == "review-core.md"
-                    || fname == "README.md"
-                    || fname == "review-one.md"
-                    || fname == "review-stat.md"
-                {
-                    continue;
-                }
-                context.push_str(&format!("## {}\n", fname));
-                context.push_str(&fs::read_to_string(&path).await?);
-                context.push_str("\n\n");
-            }
-        }
-
-        // Patterns
-        let patterns_dir = self.base_dir.join("patterns");
-        if patterns_dir.exists() {
-            context.push_str("# Technical Patterns\n\n");
-            let mut p_entries = fs::read_dir(&patterns_dir).await?;
-            let mut p_paths = Vec::new();
-            while let Some(entry) = p_entries.next_entry().await? {
-                p_paths.push(entry.path());
-            }
-            p_paths.sort();
-
-            for path in p_paths {
-                if path.extension().is_some_and(|ext| ext == "md") {
-                    context.push_str(&format!(
-                        "## {}\n",
-                        path.file_name().unwrap().to_string_lossy()
-                    ));
-                    context.push_str(&fs::read_to_string(&path).await?);
-                    context.push_str("\n\n");
-                }
-            }
-        }
-
-        Ok(context)
+        self.prompts.build_context().await
     }
 
+    /// Calculates hash of content and tools for cache key.
+    /// Delegates to PromptRegistry.
     fn calculate_hash(&self, content: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(content);
-        // Also hash tools signature if present, so we rotate cache if tools change
-        if let Some(tools) = &self.tools {
-            if let Ok(json) = serde_json::to_string(tools) {
-                hasher.update(json);
-            }
-        }
-        format!("{:x}", hasher.finalize())
+        self.prompts
+            .calculate_content_hash(content, self.tools.as_deref())
     }
 
     /// Ensures a valid cache exists for the current content.
@@ -148,7 +82,7 @@ impl CacheManager {
             system_instruction: Some(Content {
                 role: "system".to_string(),
                 parts: vec![Part::Text {
-                    text: "You are an expert Linux kernel reviewer.".to_string(), // Brief intro
+                    text: PromptRegistry::get_cache_system_instruction().to_string(),
                     thought_signature: None,
                 }],
             }),
@@ -302,13 +236,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_ensure_cache_ignores_wrong_model() {
+        use sha2::{Digest, Sha256};
+
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir = temp_dir.path().to_path_buf();
 
         // Construct the expected context string for an empty dir
-        let context_str = "You're an expert Linux kernel developer and maintainer with deep knowledge of Linux, Operating Systems, modern hardware and Linux community standards and processes.\n\n# Subsystem Guidelines\n\n";
+        // Uses the constant from PromptRegistry
+        let context_str = format!(
+            "{}\n\n# Subsystem Guidelines\n\n",
+            crate::worker::prompts::SYSTEM_IDENTITY
+        );
         let mut hasher = Sha256::new();
-        hasher.update(context_str);
+        hasher.update(&context_str);
         // Tools are None
         let hash = format!("{:x}", hasher.finalize());
         let short_hash = &hash[..8];

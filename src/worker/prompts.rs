@@ -1,5 +1,21 @@
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use tokio::fs;
+
+/// System identity prompt - used across all AI interactions
+pub const SYSTEM_IDENTITY: &str = "You're an expert Linux kernel developer and maintainer with deep knowledge of Linux, Operating Systems, modern hardware and Linux community standards and processes.";
+
+/// Brief system instruction for cached content
+pub const CACHE_SYSTEM_INSTRUCTION: &str = "You are an expert Linux kernel reviewer.";
+
+/// Files to exclude from context building
+const EXCLUDED_FILES: &[&str] = &[
+    "review-core.md",
+    "README.md",
+    "review-one.md",
+    "review-stat.md",
+];
 
 pub struct PromptRegistry {
     base_dir: PathBuf,
@@ -14,8 +30,249 @@ impl PromptRegistry {
         &self.base_dir
     }
 
-    pub async fn get_system_prompt(&self) -> Result<String> {
-        let identity = "You're an expert Linux kernel developer and maintainer with deep knowledge of Linux, Operating Systems, modern hardware and Linux community standards and processes.";
-        Ok(identity.to_string())
+    /// Returns the system identity prompt
+    pub fn get_system_identity() -> &'static str {
+        SYSTEM_IDENTITY
+    }
+
+    /// Returns the cache system instruction
+    pub fn get_cache_system_instruction() -> &'static str {
+        CACHE_SYSTEM_INSTRUCTION
+    }
+
+    /// Reads the review-core.md protocol file
+    pub async fn get_review_core(&self) -> Result<String> {
+        let core_path = self.base_dir.join("review-core.md");
+        if core_path.exists() {
+            Ok(fs::read_to_string(&core_path).await?)
+        } else {
+            Ok("Deep dive regression analysis protocol.".to_string())
+        }
+    }
+
+    /// Builds the user task prompt for AI review
+    ///
+    /// When `use_cache` is true, the protocol is assumed to be in the cache,
+    /// so we don't include review-core.md content.
+    pub async fn get_user_task_prompt(&self, use_cache: bool) -> Result<String> {
+        if use_cache {
+            Ok(format!(
+                "{}\nRun a deep dive regression analysis of the top commit in the Linux source tree.\n\n\
+                 Follow the 'Review Protocol' and all Technical patterns and Subsystem Guidelines available in your context.\n\
+                 Don't try to search for prompts in files, they all are available in your context.\n\
+                 IMPORTANT: If you find regressions, you MUST use the `write_file` tool to create `review-inline.txt` as specified in the protocol. Do not output the detailed inline review content in the final JSON response findings; use the file for that.",
+                SYSTEM_IDENTITY
+            ))
+        } else {
+            let review_core = self.get_review_core().await?;
+            Ok(format!(
+                "{} Using the prompt review-prompts/review-core.md run a deep dive regression analysis of the top commit in the Linux source tree.\n\n\
+                 ## Review Protocol (review-core.md)\n\
+                 {}\n\n\
+                 IMPORTANT: If you find regressions, you MUST use the `write_file` tool to create `review-inline.txt` as specified in the protocol. Do not output the detailed inline review content in the final JSON response findings; use the file for that.",
+                SYSTEM_IDENTITY, review_core
+            ))
+        }
+    }
+
+    /// Builds full context string from prompts directory for caching
+    ///
+    /// Includes:
+    /// 1. System identity
+    /// 2. review-core.md protocol
+    /// 3. Subsystem guidelines (*.md files in root)
+    /// 4. Technical patterns (*.md files in patterns/ subdirectory)
+    pub async fn build_context(&self) -> Result<String> {
+        let mut context = String::new();
+
+        // 1. System identity
+        context.push_str(SYSTEM_IDENTITY);
+        context.push_str("\n\n");
+
+        // 2. Review protocol (review-core.md)
+        let core_path = self.base_dir.join("review-core.md");
+        if core_path.exists() {
+            context.push_str(&fs::read_to_string(&core_path).await?);
+            context.push_str("\n\n");
+        }
+
+        // 3. Subsystem guidelines (root md files)
+        context.push_str("# Subsystem Guidelines\n\n");
+
+        let mut entries = fs::read_dir(&self.base_dir).await?;
+        let mut paths = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            paths.push(entry.path());
+        }
+        paths.sort(); // Deterministic order
+
+        for path in paths {
+            if path.extension().is_some_and(|ext| ext == "md") {
+                let fname = path.file_name().unwrap().to_string_lossy();
+                if EXCLUDED_FILES.contains(&fname.as_ref()) {
+                    continue;
+                }
+                context.push_str(&format!("## {}\n", fname));
+                context.push_str(&fs::read_to_string(&path).await?);
+                context.push_str("\n\n");
+            }
+        }
+
+        // 4. Technical patterns (patterns/ subdirectory)
+        let patterns_dir = self.base_dir.join("patterns");
+        if patterns_dir.exists() {
+            context.push_str("# Technical Patterns\n\n");
+            let mut p_entries = fs::read_dir(&patterns_dir).await?;
+            let mut p_paths = Vec::new();
+            while let Some(entry) = p_entries.next_entry().await? {
+                p_paths.push(entry.path());
+            }
+            p_paths.sort();
+
+            for path in p_paths {
+                if path.extension().is_some_and(|ext| ext == "md") {
+                    context.push_str(&format!(
+                        "## {}\n",
+                        path.file_name().unwrap().to_string_lossy()
+                    ));
+                    context.push_str(&fs::read_to_string(&path).await?);
+                    context.push_str("\n\n");
+                }
+            }
+        }
+
+        Ok(context)
+    }
+
+    /// Calculates SHA256 hash of content, optionally including tools signature
+    pub fn calculate_content_hash<T: serde::Serialize>(
+        &self,
+        content: &str,
+        tools: Option<&[T]>,
+    ) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+
+        // Also hash tools signature if present, so we rotate cache if tools change
+        if let Some(tools) = tools {
+            if let Ok(json) = serde_json::to_string(tools) {
+                hasher.update(json);
+            }
+        }
+
+        format!("{:x}", hasher.finalize())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_system_identity_constant() {
+        let identity = PromptRegistry::get_system_identity();
+        assert!(identity.starts_with("You're an expert Linux kernel developer"));
+        assert!(identity.contains("maintainer"));
+    }
+
+    #[test]
+    fn test_cache_system_instruction_constant() {
+        let instruction = PromptRegistry::get_cache_system_instruction();
+        assert!(instruction.contains("Linux kernel reviewer"));
+    }
+
+    #[test]
+    fn test_content_hash_deterministic() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry = PromptRegistry::new(temp_dir.path().to_path_buf());
+
+        let content = "test content";
+        let hash1 = registry.calculate_content_hash::<()>(content, None);
+        let hash2 = registry.calculate_content_hash::<()>(content, None);
+
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash1.len(), 64); // SHA256 hex is 64 chars
+    }
+
+    #[test]
+    fn test_content_hash_differs_with_tools() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry = PromptRegistry::new(temp_dir.path().to_path_buf());
+
+        let content = "test content";
+        let tools = vec!["tool1", "tool2"];
+
+        let hash_no_tools = registry.calculate_content_hash::<()>(content, None);
+        let hash_with_tools = registry.calculate_content_hash(content, Some(&tools));
+
+        assert_ne!(hash_no_tools, hash_with_tools);
+    }
+
+    #[tokio::test]
+    async fn test_build_context_includes_identity() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry = PromptRegistry::new(temp_dir.path().to_path_buf());
+
+        let context = registry.build_context().await.unwrap();
+        assert!(context.starts_with(SYSTEM_IDENTITY));
+    }
+
+    #[tokio::test]
+    async fn test_build_context_includes_core() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let core_content = "# Test Protocol\nThis is a test.";
+        std::fs::write(temp_dir.path().join("review-core.md"), core_content).unwrap();
+
+        let registry = PromptRegistry::new(temp_dir.path().to_path_buf());
+        let context = registry.build_context().await.unwrap();
+
+        assert!(context.contains("# Test Protocol"));
+        assert!(context.contains("This is a test."));
+    }
+
+    #[tokio::test]
+    async fn test_build_context_excludes_readme() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp_dir.path().join("README.md"),
+            "# README\nDo not include",
+        )
+        .unwrap();
+        std::fs::write(
+            temp_dir.path().join("subsystem.md"),
+            "# Subsystem\nInclude me",
+        )
+        .unwrap();
+
+        let registry = PromptRegistry::new(temp_dir.path().to_path_buf());
+        let context = registry.build_context().await.unwrap();
+
+        assert!(!context.contains("Do not include"));
+        assert!(context.contains("Include me"));
+    }
+
+    #[tokio::test]
+    async fn test_user_task_prompt_cached() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry = PromptRegistry::new(temp_dir.path().to_path_buf());
+
+        let prompt = registry.get_user_task_prompt(true).await.unwrap();
+
+        assert!(prompt.contains(SYSTEM_IDENTITY));
+        assert!(prompt.contains("regression analysis"));
+        assert!(!prompt.contains("## Review Protocol")); // No embedded protocol in cached mode
+    }
+
+    #[tokio::test]
+    async fn test_user_task_prompt_non_cached() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("review-core.md"), "Protocol content").unwrap();
+
+        let registry = PromptRegistry::new(temp_dir.path().to_path_buf());
+        let prompt = registry.get_user_task_prompt(false).await.unwrap();
+
+        assert!(prompt.contains(SYSTEM_IDENTITY));
+        assert!(prompt.contains("## Review Protocol"));
+        assert!(prompt.contains("Protocol content"));
     }
 }

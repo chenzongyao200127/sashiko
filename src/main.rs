@@ -5,7 +5,7 @@ use sashiko::ingestor::Ingestor;
 use sashiko::reviewer::Reviewer;
 use sashiko::settings::Settings;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, fmt};
 
