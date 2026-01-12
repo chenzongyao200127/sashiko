@@ -1144,7 +1144,6 @@
                     <div id="patch-${pid}" style="margin-top:12px; ${borderStyle}">
                         <h3 style="display:flex; justify-content:space-between;">
                             <span>${header}</span>
-                            <span style="font-size:0.8em; font-weight:normal; color:#888;">Tokens: ${totalTokens.toLocaleString()}</span>
                         </h3>
                         ${renderReviewList(reviews)}
                         <div style="text-align: right; margin-top: 8px;">
@@ -1310,7 +1309,7 @@
             const tokensIn = (r.tokens_in || 0).toLocaleString();
             const tokensOut = (r.tokens_out || 0).toLocaleString();
             const tokensCached = (r.tokens_cached || 0).toLocaleString();
-            const tokenStr = `In: ${tokensIn} · Out: ${tokensOut} · Cached: ${tokensCached}`;
+            const tokenStr = `In: ${tokensIn} · Cached: ${tokensCached} · Out: ${tokensOut}`;
 
             let inlineHtml = '';
             if (r.inline_review) {
@@ -1338,9 +1337,9 @@
                         </div>
                         <div class="review-meta-label">Baseline:</div><div>${baselineStr}</div>
                         <div class="review-meta-label">Model:</div><div>${providerModel}</div>
-                        <div class="review-meta-label">Tokens:</div><div>${tokenStr}</div>
                         <div class="review-meta-sep"></div>
                         <div class="review-meta-label">Result:</div><div>${displayResult}</div>
+                        <div class="review-meta-label">Tokens:</div><div>${tokenStr}</div>
                     </div>
                     ${inlineHtml}
                     ${traceHtml}
