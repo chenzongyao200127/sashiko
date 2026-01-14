@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 use serde_json::Value;
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc::Sender;
 use tokio::time::{Duration, sleep};
@@ -20,6 +20,7 @@ pub struct Ingestor {
     nntp_enabled: bool,
     message_ids: Option<Vec<String>>,
     thread_ids: Option<Vec<String>>,
+    git_source: Option<String>,
     baseline: Option<String>,
 }
 
@@ -33,6 +34,7 @@ impl Ingestor {
         nntp_enabled: bool,
         message_ids: Option<Vec<String>>,
         thread_ids: Option<Vec<String>>,
+        git_source: Option<String>,
         baseline: Option<String>,
     ) -> Self {
         Self {
@@ -43,6 +45,7 @@ impl Ingestor {
             nntp_enabled,
             message_ids,
             thread_ids,
+            git_source,
             baseline,
         }
     }
@@ -114,6 +117,14 @@ impl Ingestor {
                 if let Err(e) = self.ingest_thread_by_id(thread_id).await {
                     error!("Failed to ingest thread {}: {}", thread_id, e);
                 }
+            }
+            work_done = true;
+        }
+
+        if let Some(git_source) = &self.git_source {
+            info!("Ingesting from git source: {}", git_source);
+            if let Err(e) = self.run_git_ingestion(git_source).await {
+                error!("Failed to ingest from git source {}: {}", git_source, e);
             }
             work_done = true;
         }
@@ -198,8 +209,25 @@ impl Ingestor {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("Failed to open stdout"))?;
-        let mut reader = BufReader::new(stdout);
+        let reader = BufReader::new(stdout);
 
+        self.ingest_from_mbox_reader(reader, self.baseline.clone(), &format!("thread {}", msg_id))
+            .await?;
+
+        let status = child.wait().await?;
+        if !status.success() {
+            warn!("curl/gunzip process exited with error");
+        }
+
+        Ok(())
+    }
+
+    async fn ingest_from_mbox_reader<R: AsyncBufRead + Unpin>(
+        &self,
+        mut reader: R,
+        baseline: Option<String>,
+        source_desc: &str,
+    ) -> Result<usize> {
         let mut current_email = Vec::new();
         let mut count = 0;
         let mut line = Vec::new();
@@ -215,16 +243,12 @@ impl Ingestor {
             if line.starts_with(b"From ") {
                 if !current_email.is_empty() {
                     // Process previous email
-                    self.process_mbox_email(&current_email).await?;
+                    self.process_mbox_email(&current_email, baseline.clone())
+                        .await?;
                     count += 1;
                     current_email.clear();
                 }
-                // We don't include the "From " line in the email content usually (it's the envelope)
-                // BUT mail-parser might handle it or ignore it.
-                // Standard mbox: email starts after "From ...".
-                // But some parsers expect headers immediately.
-                // Let's Skip the "From " line for the content we send to parser,
-                // as `parse_email` likely expects headers (Message-ID etc) first.
+                // We don't include the "From " line
             } else {
                 current_email.extend_from_slice(&line);
             }
@@ -232,23 +256,73 @@ impl Ingestor {
 
         // Process last email
         if !current_email.is_empty() {
-            self.process_mbox_email(&current_email).await?;
+            self.process_mbox_email(&current_email, baseline).await?;
             count += 1;
         }
 
-        let status = child.wait().await?;
-        if !status.success() {
-            warn!("curl/gunzip process exited with error");
+        info!("Successfully ingested {} messages from {}", count, source_desc);
+        Ok(count)
+    }
+
+    async fn run_git_ingestion(&self, range: &str) -> Result<()> {
+        let repo_path = std::path::PathBuf::from(&self.settings.git.repository_path);
+        if !repo_path.exists() {
+            return Err(anyhow!(
+                "Git repository not found at {:?}",
+                repo_path
+            ));
         }
 
-        info!(
-            "Successfully ingested {} messages from thread {}",
-            count, msg_id
-        );
+        // Determine baseline
+        let baseline = if let Some(b) = &self.baseline {
+            Some(b.clone())
+        } else {
+            // Try to deduce baseline from range
+            match crate::git_ops::get_range_base(&repo_path, range).await {
+                Ok(b) => {
+                    info!("Deduced baseline for range {}: {}", range, b);
+                    Some(b)
+                }
+                Err(e) => {
+                    warn!("Failed to deduce baseline for range {}: {}", range, e);
+                    None
+                }
+            }
+        };
+
+        info!("Generating patches for range {} from {:?}", range, repo_path);
+
+        let mut cmd = Command::new("git");
+        cmd.current_dir(&repo_path)
+            .args(["-c", "safe.bareRepository=all"])
+            .arg("format-patch")
+            .arg("--stdout")
+            .arg("--thread")
+            // .arg("--base=auto") // Optional: useful if we want base info in the patch, but we are setting it manually
+            .arg(range)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let mut child = cmd.spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Failed to open stdout"))?;
+        let reader = BufReader::new(stdout);
+
+        self.ingest_from_mbox_reader(reader, baseline, &format!("git range {}", range))
+            .await?;
+
+        let status = child.wait().await?;
+        if !status.success() {
+            return Err(anyhow!("git format-patch failed"));
+        }
+
         Ok(())
     }
 
-    async fn process_mbox_email(&self, raw_bytes: &[u8]) -> Result<()> {
+    async fn process_mbox_email(&self, raw_bytes: &[u8], baseline: Option<String>) -> Result<()> {
         // We don't have the Message-ID easily unless we parse it here,
         // but we can let the main parser handle it.
         // We use a placeholder ID or try to extract it.
@@ -277,7 +351,7 @@ impl Ingestor {
                 article_id: msg_id,
                 content: Vec::new(),
                 raw: Some(raw_bytes.to_vec()),
-                baseline: self.baseline.clone(),
+                baseline,
             })
             .await?;
         Ok(())

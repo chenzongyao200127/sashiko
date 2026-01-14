@@ -36,6 +36,10 @@ struct Cli {
     #[arg(long, value_name = "MSG_ID")]
     thread: Option<Vec<String>>,
 
+    /// Ingest patches from a local git repository (hash, tag, or range)
+    #[arg(long, value_name = "REV_RANGE")]
+    git: Option<String>,
+
     /// Run ingestion only, skipping the reviewer service
     #[arg(long)]
     ingest_only: bool,
@@ -253,7 +257,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Start Ingestor (feeds raw_tx)
-    let is_batch_mode = cli.message.is_some() || cli.thread.is_some();
+    let is_batch_mode = cli.message.is_some() || cli.thread.is_some() || cli.git.is_some();
     let ingestor = Ingestor::new(
         settings.clone(),
         db.clone(),
@@ -262,6 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.nntp,
         cli.message,
         cli.thread,
+        cli.git,
         cli.baseline,
     );
     let ingestor_handle = tokio::spawn(async move {
