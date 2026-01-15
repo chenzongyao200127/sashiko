@@ -246,7 +246,7 @@ impl Ingestor {
             }
 
             // check if line starts with "From "
-            if line.starts_with(b"From ") {
+            if is_mbox_separator(&line) {
                 if !current_email.is_empty() {
                     // Process previous email
                     self.process_mbox_email(&current_email, baseline.clone(), group)
@@ -793,4 +793,14 @@ impl Ingestor {
         );
         Ok(processed_blobs)
     }
+}
+
+fn is_mbox_separator(line: &[u8]) -> bool {
+    if !line.starts_with(b"From ") {
+        return false;
+    }
+    // Heuristic: Mbox separator lines (From_ lines) usually contain a timestamp.
+    // We look for at least two colons (HH:MM:SS) to distinguish from
+    // "From " starting a sentence in the body.
+    line.iter().filter(|&&b| b == b':').count() >= 2
 }
