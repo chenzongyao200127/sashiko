@@ -10,6 +10,7 @@ async-trait = "0.1.89"
 axum = "0.8.8"
 clap = { version = "4.5.54", features = ["derive"] }
 config = "0.15.19"
+fastrand = "2.3.0"
 futures = "0.3.31"
 libsql = "0.9.29"
 mail-parser = "0.11.1"

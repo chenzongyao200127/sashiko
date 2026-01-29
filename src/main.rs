@@ -20,6 +20,10 @@ struct Cli {
     #[arg(long)]
     nntp: bool,
 
+    /// Enable REST API for manual injection (disabled by default)
+    #[arg(long)]
+    api: bool,
+
     /// Disable AI interactions (ingestion only)
     #[arg(long)]
     no_ai: bool,
@@ -138,6 +142,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (raw_tx, mut raw_rx) = mpsc::channel::<Event>(1000);
     let (parsed_tx, mut parsed_rx) = mpsc::channel::<ParsedArticle>(1000);
 
+    // Initialize FetchAgent
+    let repo_path = std::path::PathBuf::from(&settings.git.repository_path);
+    let (fetch_agent, fetch_tx) = sashiko::fetcher::FetchAgent::new(repo_path, raw_tx.clone());
+
+    // Spawn FetchAgent
+    tokio::spawn(async move {
+        fetch_agent.run().await;
+    });
+
     // Parser Dispatcher
     let semaphore = Arc::new(Semaphore::new(50));
     let parser_handle = tokio::spawn(async move {
@@ -154,8 +167,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::spawn(async move {
                 let _permit = permit; // Hold permit until task completion
 
-                // Extract raw bytes
-                let (group, article_id, raw_bytes, baseline) = match event {
+                match event {
+                    Event::PatchSubmitted {
+                        group,
+                        article_id,
+                        subject,
+                        author,
+                        message,
+                        diff,
+                        base_commit,
+                        timestamp,
+                    } => {
+                        // Pre-parsed patch handling
+                        let metadata = sashiko::patch::PatchsetMetadata {
+                            message_id: article_id.clone(),
+                            subject,
+                            author,
+                            date: timestamp,
+                            in_reply_to: None,
+                            references: vec![],
+                            index: 1, // Treat as single patch
+                            total: 1,
+                            to: "submitted".to_string(),
+                            cc: "".to_string(),
+                            is_patch_or_cover: true,
+                            version: None,
+                            body: message.clone(),
+                        };
+
+                        let patch = Some(sashiko::patch::Patch {
+                            message_id: article_id.clone(),
+                            body: message,
+                            diff,
+                            part_index: 1,
+                        });
+
+                        if let Err(e) = tx
+                            .send(ParsedArticle {
+                                group,
+                                article_id,
+                                metadata,
+                                patch,
+                                baseline: base_commit,
+                            })
+                            .await
+                        {
+                            error!("Failed to send pre-parsed article: {}", e);
+                        }
+                    }
                     Event::ArticleFetched {
                         group,
                         article_id,
@@ -163,39 +222,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         raw,
                         baseline,
                     } => {
+                        // Standard raw parsing logic
                         let bytes = match raw {
                             Some(b) => b,
                             None => content.join("\n").into_bytes(),
                         };
-                        (group, article_id, bytes, baseline)
-                    }
-                };
 
-                // Offload CPU parsing to blocking thread pool
-                let parse_result =
-                    tokio::task::spawn_blocking(move || sashiko::patch::parse_email(&raw_bytes))
+                        // Offload CPU parsing to blocking thread pool
+                        let parse_result = tokio::task::spawn_blocking(move || {
+                            sashiko::patch::parse_email(&bytes)
+                        })
                         .await;
 
-                match parse_result {
-                    Ok(Ok((metadata, patch_opt))) => {
-                        if let Err(e) = tx
-                            .send(ParsedArticle {
-                                group,
-                                article_id,
-                                metadata,
-                                patch: patch_opt,
-                                baseline,
-                            })
-                            .await
-                        {
-                            error!("Failed to send parsed article: {}", e);
+                        match parse_result {
+                            Ok(Ok((metadata, patch_opt))) => {
+                                if let Err(e) = tx
+                                    .send(ParsedArticle {
+                                        group,
+                                        article_id,
+                                        metadata,
+                                        patch: patch_opt,
+                                        baseline,
+                                    })
+                                    .await
+                                {
+                                    error!("Failed to send parsed article: {}", e);
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                info!("Parse error for {}: {}", article_id, e);
+                            }
+                            Err(e) => {
+                                error!("Join error in parser: {}", e);
+                            }
                         }
-                    }
-                    Ok(Err(e)) => {
-                        info!("Parse error for {}: {}", article_id, e);
-                    }
-                    Err(e) => {
-                        error!("Join error in parser: {}", e);
                     }
                 }
             });
@@ -261,7 +321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ingestor = Ingestor::new(
         settings.clone(),
         db.clone(),
-        raw_tx,
+        raw_tx.clone(),
         cli.download,
         cli.nntp,
         cli.message,
@@ -278,8 +338,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start Web API
     let api_settings = settings.server.clone();
     let api_db = db.clone();
+    let api_tx = raw_tx.clone();
+    let api_fetch_tx = fetch_tx.clone();
     tokio::spawn(async move {
-        if let Err(e) = sashiko::api::run_server(api_settings, api_db).await {
+        if let Err(e) = sashiko::api::run_server(api_settings, api_db, api_tx, api_fetch_tx).await {
             error!("Web API fatal error: {}", e);
         }
     });
@@ -621,15 +683,17 @@ mod tests {
 
     #[test]
     fn test_cli_parsing() {
-        let args = vec!["sashiko", "--download", "100", "--nntp"];
+        let args = vec!["sashiko", "--download", "100", "--nntp", "--api"];
         let cli = Cli::parse_from(args);
         assert_eq!(cli.download, Some(100));
         assert!(cli.nntp);
+        assert!(cli.api);
 
         let args = vec!["sashiko"];
         let cli = Cli::parse_from(args);
         assert_eq!(cli.download, None);
         assert!(!cli.nntp);
+        assert!(!cli.api);
     }
 
     #[test]

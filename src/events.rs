@@ -10,6 +10,16 @@ pub enum Event {
         raw: Option<Vec<u8>>,
         baseline: Option<String>,
     },
+    PatchSubmitted {
+        group: String,
+        article_id: String,
+        subject: String,
+        author: String,
+        message: String,
+        diff: String,
+        base_commit: Option<String>,
+        timestamp: i64,
+    },
 }
 
 #[derive(Debug)]

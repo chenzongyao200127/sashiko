@@ -1,20 +1,25 @@
 use crate::db::Database;
+use crate::events::Event;
+use crate::fetcher::FetchRequest;
 use crate::settings::ServerSettings;
 use axum::{
     Json, Router,
     extract::{Query, State},
     http::StatusCode,
-    routing::{get, get_service},
+    routing::{get, get_service, post},
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use tower_http::services::{ServeDir, ServeFile};
-use tracing::info;
+use tracing::{error, info};
 
 pub struct AppState {
     pub db: Arc<Database>,
+    pub sender: mpsc::Sender<Event>,
+    pub fetch_sender: mpsc::Sender<FetchRequest>,
 }
 
 #[derive(Deserialize)]
@@ -50,11 +55,46 @@ pub struct SubsystemQuery {
     pub subsystem_id: Option<i64>,
 }
 
+#[derive(Deserialize)]
+pub struct InjectRequest {
+    pub raw: String,
+    pub group: Option<String>,
+    pub baseline: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SubmitRequest {
+    Local {
+        author: String,
+        subject: String,
+        message: String,
+        diff: String,
+        base_commit: Option<String>,
+    },
+    Remote {
+        sha: String,
+        repo: String,
+    },
+}
+
+#[derive(Serialize)]
+pub struct SubmitResponse {
+    pub status: String,
+    pub id: String,
+}
+
 pub async fn run_server(
     settings: ServerSettings,
     db: Arc<Database>,
+    sender: mpsc::Sender<Event>,
+    fetch_sender: mpsc::Sender<FetchRequest>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = Arc::new(AppState { db });
+    let state = Arc::new(AppState {
+        db,
+        sender,
+        fetch_sender,
+    });
 
     let app = Router::new()
         .route("/api/patchsets", get(list_patchsets))
@@ -66,6 +106,7 @@ pub async fn run_server(
         .route("/api/stats/timeline", get(stats_timeline))
         .route("/api/stats/reviews", get(stats_reviews))
         .route("/api/stats/tools", get(stats_tools))
+        .route("/api/submit", post(submit_patch))
         .route("/", get_service(ServeFile::new("static/index.html")))
         .nest_service("/static", ServeDir::new("static"))
         .with_state(state);
@@ -77,6 +118,88 @@ pub async fn run_server(
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+fn generate_synthetic_id(prefix: &str) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let start = SystemTime::now();
+    let since_the_epoch = start
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards");
+    // e.g. sashiko-local-1715890000-12345
+    format!(
+        "sashiko-{}-{}-{}",
+        prefix,
+        since_the_epoch.as_secs(),
+        fastrand::u32(..)
+    )
+}
+
+async fn submit_patch(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SubmitRequest>,
+) -> Result<Json<SubmitResponse>, StatusCode> {
+    match payload {
+        SubmitRequest::Local {
+            author,
+            subject,
+            message,
+            diff,
+            base_commit,
+        } => {
+            let id = generate_synthetic_id("local");
+            info!("Received local patch submission: {}", id);
+
+            let event = Event::PatchSubmitted {
+                group: "api-submit".to_string(),
+                article_id: id.clone(),
+                subject,
+                author,
+                message,
+                diff,
+                base_commit,
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+            };
+
+            if let Err(e) = state.sender.send(event).await {
+                error!("Failed to send local patch to queue: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+
+            Ok(Json(SubmitResponse {
+                status: "accepted".to_string(),
+                id,
+            }))
+        }
+        SubmitRequest::Remote { sha, repo } => {
+            // Use the SHA as the ID or generate one?
+            // If we use SHA, it's unique but multiple requests for same SHA might conflict if we assume ID uniqueness in DB.
+            // But Git SHAs are unique content-wise.
+            // Let's use the SHA as the ID for tracking simplicity if the user provides it.
+            // Actually, `article_id` in DB is unique.
+            // Using the SHA directly as ID is good.
+            let id = sha.clone();
+            info!("Received remote fetch request: {} from {}", sha, repo);
+
+            let req = FetchRequest {
+                repo_url: repo,
+                commit_hash: sha,
+            };
+
+            if let Err(e) = state.fetch_sender.send(req).await {
+                error!("Failed to send fetch request to queue: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+
+            Ok(Json(SubmitResponse {
+                status: "accepted".to_string(),
+                id,
+            }))
+        }
+    }
 }
 
 async fn list_patchsets(
