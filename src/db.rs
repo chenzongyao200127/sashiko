@@ -1447,7 +1447,7 @@ impl Database {
         let mut rows = self
             .conn
             .query(
-                "SELECT id, date, author, subject, subject_index, total_parts FROM patchsets 
+                "SELECT id, date, author, subject, subject_index, total_parts, received_parts FROM patchsets 
                  WHERE thread_id = ? OR (author = ? AND date BETWEEN ? AND ?)",
                 libsql::params![thread_id, author, window_start, window_end],
             )
@@ -1462,6 +1462,13 @@ impl Database {
             let existing_subject: String = row.get(3)?;
             let existing_subject_index: u32 = row.get(4).unwrap_or(9999);
             let existing_total: u32 = row.get(5).unwrap_or(1);
+            let existing_received: u32 = row.get(6).unwrap_or(0);
+
+            // If the patchset is already full, do not merge more patches into it.
+            // This prevents merging unrelated patchsets that happen to look similar (same author/size).
+            if existing_received >= existing_total {
+                continue;
+            }
 
             // Parse version from existing subject
             let existing_version = crate::patch::parse_subject_version(&existing_subject);
