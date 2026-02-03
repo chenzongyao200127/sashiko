@@ -1,6 +1,10 @@
 use crate::ai::gemini::{FunctionDeclaration, Tool};
 use crate::ai::truncator::Truncator;
 use anyhow::{Result, anyhow};
+use grep::printer::StandardBuilder;
+use grep::regex::RegexMatcher;
+use grep::searcher::{BinaryDetection, SearcherBuilder};
+use ignore::WalkBuilder;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -456,32 +460,73 @@ impl ToolBox {
     async fn search_file_content(&self, args: Value) -> Result<Value> {
         let pattern = args["pattern"]
             .as_str()
-            .ok_or_else(|| anyhow!("Missing pattern"))?;
-        let path_str = args["path"].as_str().unwrap_or(".");
-        let context_lines = args["context_lines"].as_u64().unwrap_or(0);
+            .ok_or_else(|| anyhow!("Missing pattern"))?
+            .to_string();
+        let path_str = args["path"].as_str().unwrap_or(".").to_string();
+        let context_lines = args["context_lines"].as_u64().unwrap_or(0) as usize;
 
-        let _ = self.validate_path(path_str, &self.worktree_path)?;
+        let search_path = self.validate_path(&path_str, &self.worktree_path)?;
+        let worktree_root = self.worktree_path.clone();
 
-        let mut cmd = Command::new("grep");
-        cmd.current_dir(&self.worktree_path)
-            .arg("-rnI")
-            .arg(format!("-C{}", context_lines))
-            .arg(pattern);
+        // Perform blocking search operation in a separate thread
+        let content = tokio::task::spawn_blocking(move || {
+            let matcher =
+                RegexMatcher::new(&pattern).map_err(|e| anyhow!("Invalid regex: {}", e))?;
+            let mut searcher = SearcherBuilder::new()
+                .binary_detection(BinaryDetection::quit(b'\x00'))
+                .line_number(true)
+                .before_context(context_lines)
+                .after_context(context_lines)
+                .build();
 
-        if path_str != "." {
-            cmd.arg(path_str);
-        }
+            // We use an Arc<Mutex<Vec<u8>>> to capture output because WalkBuilder is multithreaded (by default)
+            // or if we use synchronous, we can just use a simple Vec if we don't thread.
+            // But WalkBuilder::new() returns an iterator which is driven on the current thread.
+            // So we can just use a simple buffer.
+            let mut output_buffer = Vec::new();
 
-        let output = cmd.output().await?;
+            // Standard printer writes to the buffer.
+            // We create a new printer for each file to ensure we can write to the same buffer?
+            // Actually, `printer` takes a `W`.
 
-        if !output.status.success() && output.status.code() != Some(1) {
-            return Err(anyhow!(
-                "grep failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
+            let walker = WalkBuilder::new(&search_path)
+                .hidden(false) // Search hidden files? git grep usually doesn't, but grep -r does. default ignore handles .git
+                .ignore(true) // Respect .ignore
+                .git_ignore(true) // Respect .gitignore
+                .build();
 
-        let content = String::from_utf8_lossy(&output.stdout).to_string();
+            for result in walker {
+                match result {
+                    Ok(entry) => {
+                        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
+                            continue;
+                        }
+
+                        // We use a fresh buffer for this file to avoid borrowing issues if we reused one
+                        // strictly speaking, but StandardBuilder::build_no_color takes W.
+                        // We can just pass a mutable reference to our main buffer.
+                        let mut printer = StandardBuilder::new().build_no_color(&mut output_buffer);
+
+                        let path_to_print = entry
+                            .path()
+                            .strip_prefix(&worktree_root)
+                            .unwrap_or(entry.path());
+
+                        let _ = searcher.search_path(
+                            &matcher,
+                            entry.path(),
+                            printer.sink_with_path(&matcher, path_to_print),
+                        );
+                    }
+                    Err(_) => continue, // Ignore permission errors etc, similar to grep -r 2>/dev/null
+                }
+            }
+
+            String::from_utf8(output_buffer)
+                .map_err(|e| anyhow!("Search output was not valid UTF-8: {}", e))
+        })
+        .await??;
+
         if content.is_empty() {
             return Ok(json!({ "matches": [], "message": "No matches found." }));
         }
@@ -528,5 +573,51 @@ impl ToolBox {
         }
 
         Ok(json!({ "files": content }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_search_file_content() -> Result<()> {
+        let dir = tempdir()?;
+        let file_path = dir.path().join("test.rs");
+        let mut file = File::create(&file_path)?;
+        writeln!(file, "fn main() {{")?;
+        writeln!(file, "    println!(\"Hello World\");")?;
+        writeln!(file, "    // TODO: fix this")?;
+        writeln!(file, "}}")?;
+
+        let toolbox = ToolBox::new(dir.path().to_path_buf(), None);
+
+        // Test basic search
+        let args = json!({
+            "pattern": "println",
+            "path": "."
+        });
+        let result = toolbox.call("search_file_content", args).await?;
+        let content = result["content"].as_str().unwrap();
+
+        assert!(content.contains("test.rs"));
+        assert!(content.contains("2:    println!(\"Hello World\");"));
+
+        // Test context
+        let args = json!({
+            "pattern": "TODO",
+            "context_lines": 1
+        });
+        let result = toolbox.call("search_file_content", args).await?;
+        let content = result["content"].as_str().unwrap();
+
+        assert!(content.contains("2-    println!(\"Hello World\");"));
+        assert!(content.contains("3:    // TODO: fix this"));
+        assert!(content.contains("4-}"));
+
+        Ok(())
     }
 }
