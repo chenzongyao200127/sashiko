@@ -13,6 +13,7 @@ pub enum Event {
     PatchSubmitted {
         group: String,
         article_id: String,
+        message_id: String,
         subject: String,
         author: String,
         message: String,

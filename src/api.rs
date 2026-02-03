@@ -187,6 +187,7 @@ async fn submit_patch(
             let event = Event::PatchSubmitted {
                 group: "api-submit".to_string(),
                 article_id: id.clone(),
+                message_id: id.clone(),
                 subject,
                 author,
                 message,
@@ -246,9 +247,11 @@ async fn submit_patch(
                 .as_secs() as i64;
 
             for (i, patch) in patches.into_iter().enumerate() {
+                let patch_id = format!("{}-{}", series_id, i + 1);
                 let event = Event::PatchSubmitted {
                     group: "api-submit".to_string(),
                     article_id: series_id.clone(),
+                    message_id: patch_id,
                     subject: patch.subject,
                     author: author.clone(),
                     message: patch.message,

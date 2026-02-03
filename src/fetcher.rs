@@ -201,7 +201,13 @@ impl FetchAgent {
                     // 3. Process each SHA
                     for (i, sha) in shas.iter().enumerate() {
                         match self.extract_patch(sha, range, (i + 1) as u32, count).await {
-                            Ok(event) => {
+                            Ok(mut event) => {
+                                if let Event::PatchSubmitted {
+                                    ref mut message_id, ..
+                                } = event
+                                {
+                                    *message_id = sha.clone();
+                                }
                                 if let Err(e) = self.main_tx.send(event).await {
                                     error!("Failed to send PatchSubmitted event: {}", e);
                                 }
@@ -221,7 +227,13 @@ impl FetchAgent {
                         .extract_patch(&commit_or_range, &commit_or_range, 1, 1)
                         .await
                     {
-                        Ok(event) => {
+                        Ok(mut event) => {
+                            if let Event::PatchSubmitted {
+                                ref mut message_id, ..
+                            } = event
+                            {
+                                *message_id = commit_or_range.clone();
+                            }
                             if let Err(e) = self.main_tx.send(event).await {
                                 error!("Failed to send PatchSubmitted event: {}", e);
                             } else {
@@ -380,6 +392,7 @@ impl FetchAgent {
         Ok(Event::PatchSubmitted {
             group: "git-fetch".to_string(),
             article_id: article_id.to_string(),
+            message_id: String::new(), // Set by caller
             subject: subject.to_string(),
             author,
             message,

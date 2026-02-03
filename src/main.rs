@@ -186,6 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Event::PatchSubmitted {
                         group,
                         article_id,
+                        message_id,
                         subject,
                         author,
                         message,
@@ -197,12 +198,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } => {
                         // Pre-parsed patch handling
                         let metadata = sashiko::patch::PatchsetMetadata {
-                            message_id: article_id.clone(),
+                            message_id: message_id.clone(),
                             subject,
                             author,
                             date: timestamp,
-                            in_reply_to: None,
-                            references: vec![],
+                            in_reply_to: if message_id != article_id {
+                                Some(article_id.clone())
+                            } else {
+                                None
+                            },
+                            references: if message_id != article_id {
+                                vec![article_id.clone()]
+                            } else {
+                                vec![]
+                            },
                             index,
                             total,
                             to: "submitted".to_string(),
@@ -213,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         let patch = Some(sashiko::patch::Patch {
-                            message_id: article_id.clone(),
+                            message_id,
                             body: message,
                             diff,
                             part_index: index,
@@ -466,6 +475,19 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) ->
                 Ok(tid) => (tid, true, total_count),
                 Err(e) => {
                     error!("Failed to ensure thread for git import {}: {}", range, e);
+                    return ProcessStatus::Error;
+                }
+            }
+        } else if group == "git-fetch" || group == "api-submit" {
+            // Group these by article_id (which is the range or single SHA/local_id)
+            let root_msg_id = format!("{}@sashiko.local", article_id);
+            match worker_db
+                .ensure_thread_for_message(&root_msg_id, metadata.date)
+                .await
+            {
+                Ok(tid) => (tid, false, 0),
+                Err(e) => {
+                    error!("Failed to ensure thread for group {}: {}", group, e);
                     return ProcessStatus::Error;
                 }
             }
