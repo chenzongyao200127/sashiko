@@ -80,7 +80,6 @@ impl Reviewer {
         let prompts_dir = PathBuf::from("review-prompts/kernel");
         let client = Box::new(GeminiClient::new(
             settings.ai.model.clone(),
-            settings.ai.rate_limit_tokens_per_minute,
         ));
 
         // We need tool definitions for the cache.
@@ -860,7 +859,6 @@ async fn run_review_tool(
             let mut lines = reader.lines();
             let client = GeminiClient::new(
                 settings.ai.model.clone(),
-                settings.ai.rate_limit_tokens_per_minute,
             );
             let mut final_result: Option<Value> = None;
             let mut ai_started = false;

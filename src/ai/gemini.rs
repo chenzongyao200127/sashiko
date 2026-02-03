@@ -215,7 +215,7 @@ pub struct GeminiClient {
 }
 
 impl GeminiClient {
-    pub fn new(model: String, _rate_limit_tokens_per_minute: usize) -> Self {
+    pub fn new(model: String) -> Self {
         let api_key = std::env::var("LLM_API_KEY").unwrap_or_default();
         Self {
             api_key,

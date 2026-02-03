@@ -27,8 +27,6 @@ pub struct AiSettings {
     pub model: String,
     #[serde(default = "default_max_input_words")]
     pub max_input_words: usize,
-    #[serde(default = "default_rate_limit_tokens_per_minute")]
-    pub rate_limit_tokens_per_minute: usize,
     #[serde(default = "default_max_interactions")]
     pub max_interactions: usize,
     #[serde(default = "default_temperature")]
@@ -41,10 +39,6 @@ pub struct AiSettings {
 
 fn default_temperature() -> f32 {
     1.0
-}
-
-fn default_rate_limit_tokens_per_minute() -> usize {
-    900_000
 }
 
 fn default_max_interactions() -> usize {
