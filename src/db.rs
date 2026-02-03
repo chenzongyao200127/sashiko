@@ -1454,11 +1454,20 @@ impl Database {
                 // Found it! Use this ID. We'll update its fields below.
                 let id: i64 = row.get(0)?;
                 let subject_index: u32 = row.get(4).unwrap_or(9999);
+                let existing_total: u32 = row.get(5).unwrap_or(1);
+
+                // Prevent downgrading a series to a singleton if we already have multiple parts.
+                // This handles cases where a singleton root (1/1) overwrites a series (N/N) inferred from replies.
+                let final_total = if total_parts == 1 && existing_total > 1 {
+                    existing_total
+                } else {
+                    total_parts
+                };
 
                 // We proceed to update this record with the full metadata
                 self.conn.execute(
                     "UPDATE patchsets SET thread_id = ?, author = ?, total_parts = ?, parser_version = ?, to_recipients = ?, cc_recipients = ? WHERE id = ?",
-                    libsql::params![thread_id, author, total_parts, parser_version, to, cc, id],
+                    libsql::params![thread_id, author, final_total, parser_version, to, cc, id],
                 ).await?;
 
                 if let Some(bid) = baseline_id {
