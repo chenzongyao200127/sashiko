@@ -1,4 +1,5 @@
 use std::time::{Duration, Instant};
+use tiktoken_rs::cl100k_base;
 
 pub struct TokenBudget {
     pub max_tokens: usize,
@@ -29,14 +30,18 @@ impl TokenBudget {
         self.current = 0;
     }
 
-    /// Estimate token count for a string.
-    /// A common rule of thumb is 1 token ~ 4 characters.
+    /// Estimate token count for a string using cl100k_base (GPT-4/Gemini approximation).
     pub fn estimate_tokens(text: &str) -> usize {
         if text.is_empty() {
             return 0;
         }
-        // Basic heuristic: 1 token approx 4 chars
-        text.len().div_ceil(4)
+        match cl100k_base() {
+            Ok(bpe) => bpe.encode_with_special_tokens(text).len(),
+            Err(_) => {
+                // Fallback heuristic if tokenizer fails (unlikely)
+                text.len().div_ceil(4)
+            }
+        }
     }
 }
 
@@ -97,8 +102,12 @@ mod tests {
     #[test]
     fn test_estimate_tokens() {
         assert_eq!(TokenBudget::estimate_tokens(""), 0);
-        assert_eq!(TokenBudget::estimate_tokens("1234"), 1);
-        assert_eq!(TokenBudget::estimate_tokens("12345"), 2);
+        // Use strings that are more stable across tokenizer versions if possible,
+        // or just accept what the tokenizer says.
+        let t1 = TokenBudget::estimate_tokens("hello");
+        assert!(t1 >= 1);
+        let t2 = TokenBudget::estimate_tokens("hello world");
+        assert!(t2 > t1);
     }
 
     #[test]

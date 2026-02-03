@@ -20,6 +20,10 @@ struct Cli {
     #[arg(long)]
     nntp: bool,
 
+    /// Enable REST API for manual injection (disabled by default)
+    #[arg(long)]
+    api: bool,
+
     /// Disable AI interactions (ingestion only)
     #[arg(long)]
     no_ai: bool,
@@ -138,6 +142,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (raw_tx, mut raw_rx) = mpsc::channel::<Event>(1000);
     let (parsed_tx, mut parsed_rx) = mpsc::channel::<ParsedArticle>(1000);
 
+    // Initialize FetchAgent
+    let repo_path = std::path::PathBuf::from(&settings.git.repository_path);
+    let (fetch_agent, fetch_tx) = sashiko::fetcher::FetchAgent::new(repo_path, raw_tx.clone());
+
+    // Spawn FetchAgent
+    tokio::spawn(async move {
+        fetch_agent.run().await;
+    });
+
     // Parser Dispatcher
     let semaphore = Arc::new(Semaphore::new(50));
     let parser_handle = tokio::spawn(async move {
@@ -154,8 +167,75 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::spawn(async move {
                 let _permit = permit; // Hold permit until task completion
 
-                // Extract raw bytes
-                let (group, article_id, raw_bytes, baseline) = match event {
+                match event {
+                    Event::IngestionFailed { article_id, error } => {
+                        if let Err(e) = tx
+                            .send(ParsedArticle {
+                                group: "error".to_string(),
+                                article_id,
+                                metadata: None,
+                                patch: None,
+                                baseline: None,
+                                failed_error: Some(error),
+                            })
+                            .await
+                        {
+                            error!("Failed to forward IngestionFailed event: {}", e);
+                        }
+                    }
+                    Event::PatchSubmitted {
+                        group,
+                        article_id,
+                        message_id,
+                        subject,
+                        author,
+                        message,
+                        diff,
+                        base_commit,
+                        timestamp,
+                        index,
+                        total,
+                    } => {
+                        let root_msg_id = format!("{}@sashiko.local", article_id);
+
+                        // Pre-parsed patch handling
+                        let metadata = sashiko::patch::PatchsetMetadata {
+                            message_id: message_id.clone(),
+                            subject,
+                            author,
+                            date: timestamp,
+                            in_reply_to: Some(root_msg_id.clone()),
+                            references: vec![root_msg_id.clone()],
+                            index,
+                            total,
+                            to: "submitted".to_string(),
+                            cc: "".to_string(),
+                            is_patch_or_cover: true,
+                            version: None,
+                            body: message.clone(),
+                        };
+
+                        let patch = Some(sashiko::patch::Patch {
+                            message_id,
+                            body: message,
+                            diff,
+                            part_index: index,
+                        });
+
+                        if let Err(e) = tx
+                            .send(ParsedArticle {
+                                group,
+                                article_id,
+                                metadata: Some(metadata),
+                                patch,
+                                baseline: base_commit,
+                                failed_error: None,
+                            })
+                            .await
+                        {
+                            error!("Failed to send pre-parsed article: {}", e);
+                        }
+                    }
                     Event::ArticleFetched {
                         group,
                         article_id,
@@ -163,39 +243,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         raw,
                         baseline,
                     } => {
+                        // Standard raw parsing logic
                         let bytes = match raw {
                             Some(b) => b,
                             None => content.join("\n").into_bytes(),
                         };
-                        (group, article_id, bytes, baseline)
-                    }
-                };
 
-                // Offload CPU parsing to blocking thread pool
-                let parse_result =
-                    tokio::task::spawn_blocking(move || sashiko::patch::parse_email(&raw_bytes))
+                        // Offload CPU parsing to blocking thread pool
+                        let parse_result = tokio::task::spawn_blocking(move || {
+                            sashiko::patch::parse_email(&bytes)
+                        })
                         .await;
 
-                match parse_result {
-                    Ok(Ok((metadata, patch_opt))) => {
-                        if let Err(e) = tx
-                            .send(ParsedArticle {
-                                group,
-                                article_id,
-                                metadata,
-                                patch: patch_opt,
-                                baseline,
-                            })
-                            .await
-                        {
-                            error!("Failed to send parsed article: {}", e);
+                        match parse_result {
+                            Ok(Ok((metadata, patch_opt))) => {
+                                if let Err(e) = tx
+                                    .send(ParsedArticle {
+                                        group,
+                                        article_id,
+                                        metadata: Some(metadata),
+                                        patch: patch_opt,
+                                        baseline,
+                                        failed_error: None,
+                                    })
+                                    .await
+                                {
+                                    error!("Failed to send parsed article: {}", e);
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                info!("Parse error for {}: {}", article_id, e);
+                            }
+                            Err(e) => {
+                                error!("Join error in parser: {}", e);
+                            }
                         }
-                    }
-                    Ok(Err(e)) => {
-                        info!("Parse error for {}: {}", article_id, e);
-                    }
-                    Err(e) => {
-                        error!("Join error in parser: {}", e);
                     }
                 }
             });
@@ -261,7 +343,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ingestor = Ingestor::new(
         settings.clone(),
         db.clone(),
-        raw_tx,
+        raw_tx.clone(),
         cli.download,
         cli.nntp,
         cli.message,
@@ -278,8 +360,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start Web API
     let api_settings = settings.server.clone();
     let api_db = db.clone();
+    let api_tx = raw_tx.clone();
+    let api_fetch_tx = fetch_tx.clone();
     tokio::spawn(async move {
-        if let Err(e) = sashiko::api::run_server(api_settings, api_db).await {
+        if let Err(e) = sashiko::api::run_server(api_settings, api_db, api_tx, api_fetch_tx).await {
             error!("Web API fatal error: {}", e);
         }
     });
@@ -327,7 +411,29 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) ->
         metadata,
         patch,
         baseline,
+        failed_error,
     } = article;
+
+    // Handle ingestion failure
+    if let Some(err) = failed_error {
+        info!("Handling ingestion failure for {}: {}", article_id, err);
+        if let Err(e) = worker_db.update_patchset_error(&article_id, &err).await {
+            error!("Failed to update patchset error in DB: {}", e);
+        }
+        return ProcessStatus::Ingested; // Successfully handled the failure event
+    }
+
+    let metadata = match metadata {
+        Some(m) => m,
+        None => {
+            error!(
+                "Missing metadata for article {} (group: {})",
+                article_id, group
+            );
+            return ProcessStatus::Error;
+        }
+    };
+
     let patch_opt = patch;
 
     // Resolve baseline ID if provided
@@ -366,6 +472,19 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) ->
                     return ProcessStatus::Error;
                 }
             }
+        } else if group == "git-fetch" || group == "api-submit" {
+            // Group these by article_id (which is the range or single SHA/local_id)
+            let root_msg_id = format!("{}@sashiko.local", article_id);
+            match worker_db
+                .ensure_thread_for_message(&root_msg_id, metadata.date)
+                .await
+            {
+                Ok(tid) => (tid, false, 0),
+                Err(e) => {
+                    error!("Failed to ensure thread for group {}: {}", group, e);
+                    return ProcessStatus::Error;
+                }
+            }
         } else if let Some(ref reply_to) = metadata.in_reply_to {
             match worker_db
                 .ensure_thread_for_message(reply_to, metadata.date)
@@ -394,7 +513,8 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) ->
         };
 
     let is_git_hash = article_id.len() == 40 && article_id.chars().all(|c| c.is_ascii_hexdigit());
-    let (body_to_store, git_hash_opt) = if is_git_hash {
+    // Only optimize storage (skip body) if it's a bulk git import where we have the archives
+    let (body_to_store, git_hash_opt) = if is_git_hash && group.starts_with("git-import") {
         ("", Some(article_id.as_str()))
     } else {
         (metadata.body.as_str(), None)
@@ -464,10 +584,13 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) ->
     );
     */
 
-    let cover_letter_id = if metadata.index == 0 {
+    let root_msg_id = format!("{}@sashiko.local", article_id);
+    let cover_letter_id = if group == "git-fetch" || group == "api-submit" {
+        Some(root_msg_id.as_str())
+    } else if metadata.index == 0 || metadata.total == 1 {
         Some(metadata.message_id.as_str())
     } else {
-        None
+        metadata.in_reply_to.as_deref()
     };
 
     if metadata.is_patch_or_cover {
@@ -621,15 +744,17 @@ mod tests {
 
     #[test]
     fn test_cli_parsing() {
-        let args = vec!["sashiko", "--download", "100", "--nntp"];
+        let args = vec!["sashiko", "--download", "100", "--nntp", "--api"];
         let cli = Cli::parse_from(args);
         assert_eq!(cli.download, Some(100));
         assert!(cli.nntp);
+        assert!(cli.api);
 
         let args = vec!["sashiko"];
         let cli = Cli::parse_from(args);
         assert_eq!(cli.download, None);
         assert!(!cli.nntp);
+        assert!(!cli.api);
     }
 
     #[test]

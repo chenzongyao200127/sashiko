@@ -1,20 +1,25 @@
 use crate::db::Database;
+use crate::events::Event;
+use crate::fetcher::FetchRequest;
 use crate::settings::ServerSettings;
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{ConnectInfo, Query, State},
     http::StatusCode,
-    routing::{get, get_service},
+    routing::{get, get_service, post},
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use tower_http::services::{ServeDir, ServeFile};
-use tracing::info;
+use tracing::{error, info};
 
 pub struct AppState {
     pub db: Arc<Database>,
+    pub sender: mpsc::Sender<Event>,
+    pub fetch_sender: mpsc::Sender<FetchRequest>,
 }
 
 #[derive(Deserialize)]
@@ -50,11 +55,64 @@ pub struct SubsystemQuery {
     pub subsystem_id: Option<i64>,
 }
 
+#[derive(Deserialize)]
+pub struct InjectRequest {
+    pub raw: String,
+    pub group: Option<String>,
+    pub baseline: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct LocalPatch {
+    pub subject: String,
+    pub message: String,
+    pub diff: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SubmitRequest {
+    Local {
+        author: String,
+        subject: String,
+        message: String,
+        diff: String,
+        base_commit: Option<String>,
+    },
+    #[serde(rename = "local-multiple")]
+    LocalMultiple {
+        author: String,
+        base_commit: Option<String>,
+        patches: Vec<LocalPatch>,
+    },
+    Remote {
+        sha: String,
+        repo: String,
+    },
+    #[serde(rename = "remote-range")]
+    RemoteRange {
+        sha: String,
+        repo: String,
+    },
+}
+
+#[derive(Serialize)]
+pub struct SubmitResponse {
+    pub status: String,
+    pub id: String,
+}
+
 pub async fn run_server(
     settings: ServerSettings,
     db: Arc<Database>,
+    sender: mpsc::Sender<Event>,
+    fetch_sender: mpsc::Sender<FetchRequest>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = Arc::new(AppState { db });
+    let state = Arc::new(AppState {
+        db,
+        sender,
+        fetch_sender,
+    });
 
     let app = Router::new()
         .route("/api/patchsets", get(list_patchsets))
@@ -66,6 +124,7 @@ pub async fn run_server(
         .route("/api/stats/timeline", get(stats_timeline))
         .route("/api/stats/reviews", get(stats_reviews))
         .route("/api/stats/tools", get(stats_tools))
+        .route("/api/submit", post(submit_patch))
         .route("/", get_service(ServeFile::new("static/index.html")))
         .nest_service("/static", ServeDir::new("static"))
         .with_state(state);
@@ -74,9 +133,176 @@ pub async fn run_server(
     info!("Web API listening on {}", addr);
 
     let listener = TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
+}
+
+fn generate_synthetic_id(prefix: &str) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let start = SystemTime::now();
+    let since_the_epoch = start
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards");
+    // e.g. sashiko-local-1715890000-12345
+    format!(
+        "sashiko-{}-{}-{}",
+        prefix,
+        since_the_epoch.as_secs(),
+        fastrand::u32(..)
+    )
+}
+
+async fn submit_patch(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SubmitRequest>,
+) -> Result<Json<SubmitResponse>, StatusCode> {
+    if !addr.ip().is_loopback() {
+        info!("Refused patch submission from non-localhost: {}", addr);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    match payload {
+        SubmitRequest::Local {
+            author,
+            subject,
+            message,
+            diff,
+            base_commit,
+        } => {
+            let id = generate_synthetic_id("local");
+            info!("Received local patch submission: {}", id);
+
+            // Create a placeholder record so the user can track status immediately
+            if let Err(e) = state.db.create_fetching_patchset(&id, &subject).await {
+                error!("Failed to create placeholder for local patch: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+
+            let event = Event::PatchSubmitted {
+                group: "api-submit".to_string(),
+                article_id: id.clone(),
+                message_id: id.clone(),
+                subject,
+                author,
+                message,
+                diff,
+                base_commit,
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+                index: 1,
+                total: 1,
+            };
+
+            if let Err(e) = state.sender.send(event).await {
+                error!("Failed to send local patch to queue: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+
+            Ok(Json(SubmitResponse {
+                status: "accepted".to_string(),
+                id,
+            }))
+        }
+        SubmitRequest::LocalMultiple {
+            author,
+            base_commit,
+            patches,
+        } => {
+            let total = patches.len();
+            if total == 0 {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            if total > 100 {
+                return Err(StatusCode::PAYLOAD_TOO_LARGE);
+            }
+
+            let series_id = generate_synthetic_id("series");
+            info!(
+                "Received local series submission: {} ({} patches)",
+                series_id, total
+            );
+
+            // Create a placeholder for the entire series
+            let first_subject = &patches[0].subject;
+            if let Err(e) = state
+                .db
+                .create_fetching_patchset(&series_id, first_subject)
+                .await
+            {
+                error!("Failed to create placeholder for local series: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+
+            for (i, patch) in patches.into_iter().enumerate() {
+                let patch_id = format!("{}-{}", series_id, i + 1);
+                let event = Event::PatchSubmitted {
+                    group: "api-submit".to_string(),
+                    article_id: series_id.clone(),
+                    message_id: patch_id,
+                    subject: patch.subject,
+                    author: author.clone(),
+                    message: patch.message,
+                    diff: patch.diff,
+                    base_commit: base_commit.clone(),
+                    timestamp: now,
+                    index: (i + 1) as u32,
+                    total: total as u32,
+                };
+
+                if let Err(e) = state.sender.send(event).await {
+                    error!("Failed to send series patch {} to queue: {}", i + 1, e);
+                    // We continue anyway, some might have succeeded
+                }
+            }
+
+            Ok(Json(SubmitResponse {
+                status: "accepted".to_string(),
+                id: series_id,
+            }))
+        }
+        SubmitRequest::Remote { sha, repo } | SubmitRequest::RemoteRange { sha, repo } => {
+            let id = sha.clone();
+            info!("Received remote fetch request: {} from {}", sha, repo);
+
+            // Create a placeholder record in the DB so the user can track status
+            if let Err(e) = state
+                .db
+                .create_fetching_patchset(&id, &format!("Fetching {} from {}...", &sha, &repo))
+                .await
+            {
+                error!("Failed to create placeholder patchset: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+
+            let req = FetchRequest {
+                repo_url: repo,
+                commit_hash: sha,
+            };
+
+            if let Err(e) = state.fetch_sender.send(req).await {
+                error!("Failed to send fetch request to queue: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+
+            Ok(Json(SubmitResponse {
+                status: "accepted".to_string(),
+                id,
+            }))
+        }
+    }
 }
 
 async fn list_patchsets(

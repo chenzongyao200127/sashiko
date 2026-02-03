@@ -3,6 +3,7 @@ pub mod api;
 pub mod baseline;
 pub mod db;
 pub mod events;
+pub mod fetcher;
 pub mod git_ops;
 pub mod ingestor;
 pub mod inspector;

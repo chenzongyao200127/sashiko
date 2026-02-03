@@ -10,13 +10,31 @@ pub enum Event {
         raw: Option<Vec<u8>>,
         baseline: Option<String>,
     },
+    PatchSubmitted {
+        group: String,
+        article_id: String,
+        message_id: String,
+        subject: String,
+        author: String,
+        message: String,
+        diff: String,
+        base_commit: Option<String>,
+        timestamp: i64,
+        index: u32,
+        total: u32,
+    },
+    IngestionFailed {
+        article_id: String,
+        error: String,
+    },
 }
 
 #[derive(Debug)]
 pub struct ParsedArticle {
     pub group: String,
     pub article_id: String,
-    pub metadata: PatchsetMetadata,
+    pub metadata: Option<PatchsetMetadata>,
     pub patch: Option<Patch>,
     pub baseline: Option<String>,
+    pub failed_error: Option<String>,
 }

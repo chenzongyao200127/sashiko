@@ -34,6 +34,7 @@ pub struct PatchsetRow {
     pub findings_high: Option<i64>,
     pub findings_critical: Option<i64>,
     pub baseline_id: Option<i64>,
+    pub failed_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -327,6 +328,9 @@ impl Database {
             .await;
         let _ = self
             .try_add_column("patchsets", "baseline_id", "INTEGER")
+            .await;
+        let _ = self
+            .try_add_column("patchsets", "failed_reason", "TEXT")
             .await;
 
         let _ = self
@@ -1372,7 +1376,50 @@ impl Database {
         baseline_id: Option<i64>,
         strict_author: bool,
     ) -> Result<Option<i64>> {
-        // Find candidate patchsets in this thread
+        // 1. Try to find by cover_letter_message_id first (handles placeholders from API/Fetcher)
+        if let Some(clid) = cover_letter_message_id {
+            let mut rows = self
+                .conn
+                .query(
+                    "SELECT id, date, author, subject, subject_index, total_parts FROM patchsets WHERE cover_letter_message_id = ?",
+                    libsql::params![clid],
+                )
+                .await?;
+            if let Ok(Some(row)) = rows.next().await {
+                // Found it! Use this ID. We'll update its fields below.
+                let id: i64 = row.get(0)?;
+                let subject_index: u32 = row.get(4).unwrap_or(9999);
+
+                // We proceed to update this record with the full metadata
+                self.conn.execute(
+                    "UPDATE patchsets SET thread_id = ?, author = ?, total_parts = ?, parser_version = ?, to_recipients = ?, cc_recipients = ? WHERE id = ?",
+                    libsql::params![thread_id, author, total_parts, parser_version, to, cc, id],
+                ).await?;
+
+                if let Some(bid) = baseline_id {
+                    self.conn
+                        .execute(
+                            "UPDATE patchsets SET baseline_id = ? WHERE id = ?",
+                            libsql::params![bid, id],
+                        )
+                        .await?;
+                }
+
+                // Update subject if this is a better index (e.g. going from placeholder to real subject)
+                if part_index < subject_index {
+                    self.conn
+                        .execute(
+                            "UPDATE patchsets SET subject = ?, subject_index = ? WHERE id = ?",
+                            libsql::params![subject, part_index, id],
+                        )
+                        .await?;
+                }
+
+                return Ok(Some(id));
+            }
+        }
+
+        // 2. Normal matching logic: Find candidate patchsets in this thread
         let mut rows = self
             .conn
             .query(
@@ -1401,7 +1448,7 @@ impl Database {
             // 3. Total parts must match
             // 4. Versions must match OR one is unspecified (None)
             // 5. For singletons (total=1), Subject must match (fuzzy) to avoid merging unrelated patches
-            
+
             let versions_compatible = match (version, existing_version) {
                 (Some(a), Some(b)) => a == b,
                 _ => true,
@@ -1642,9 +1689,9 @@ impl Database {
         }
 
         // Check if complete and update status
-        // We only transition from 'Incomplete' to 'Pending' (ready for review)
+        // We transition from 'Incomplete' OR 'Fetching' to 'Pending' (ready for review)
         self.conn.execute(
-            "UPDATE patchsets SET status = 'Pending' WHERE id = ? AND received_parts >= total_parts AND status = 'Incomplete'",
+            "UPDATE patchsets SET status = 'Pending' WHERE id = ? AND received_parts >= total_parts AND status IN ('Incomplete', 'Fetching')",
             libsql::params![patchset_id],
         ).await?;
 
@@ -1719,7 +1766,7 @@ impl Database {
 
         let sql = format!(
             "SELECT p.id, p.subject, p.status, p.thread_id, p.author, p.date, p.cover_letter_message_id, p.total_parts, p.received_parts, GROUP_CONCAT(s.name, ','),
-             COALESCE(f.low, 0), COALESCE(f.medium, 0), COALESCE(f.high, 0), COALESCE(f.critical, 0)
+             COALESCE(f.low, 0), COALESCE(f.medium, 0), COALESCE(f.high, 0), COALESCE(f.critical, 0), p.baseline_id, p.failed_reason
              FROM patchsets p
              LEFT JOIN patchsets_subsystems ps ON p.id = ps.patchset_id
              LEFT JOIN subsystems s ON ps.subsystem_id = s.id
@@ -1775,7 +1822,8 @@ impl Database {
                 findings_medium: row.get(11).ok(),
                 findings_high: row.get(12).ok(),
                 findings_critical: row.get(13).ok(),
-                baseline_id: None, // We don't fetch it in this query yet, or we can add it. For now None is safe.
+                baseline_id: row.get(14).ok(),
+                failed_reason: row.get(15).ok(),
             });
         }
         Ok(patchsets)
@@ -1864,7 +1912,7 @@ impl Database {
             .query(
                 "SELECT p.id, p.subject, p.status, p.to_recipients, p.cc_recipients, 
                     p.author, p.date, p.cover_letter_message_id, p.thread_id,
-                    p.total_parts, p.received_parts
+                    p.total_parts, p.received_parts, p.failed_reason
              FROM patchsets p 
              WHERE p.id = ?",
                 libsql::params![id],
@@ -1883,6 +1931,7 @@ impl Database {
             let thread_id: Option<i64> = row.get(8).ok();
             let total_parts: Option<u32> = row.get(9).ok();
             let received_parts: Option<u32> = row.get(10).ok();
+            let failed_reason: Option<String> = row.get(11).ok();
 
             // Fetch reviews
             let mut reviews = Vec::new();
@@ -1992,6 +2041,7 @@ impl Database {
                 "author": author,
                 "date": date,
                 "status": status,
+                "failed_reason": failed_reason,
                 "to": to,
                 "cc": cc,
                 "total_parts": total_parts,
@@ -2082,7 +2132,7 @@ impl Database {
 
     pub async fn get_pending_patchsets(&self, limit: usize) -> Result<Vec<PatchsetRow>> {
         let mut rows = self.conn.query(
-            "SELECT id, subject, status, thread_id, author, date, cover_letter_message_id, total_parts, received_parts, baseline_id 
+            "SELECT id, subject, status, thread_id, author, date, cover_letter_message_id, total_parts, received_parts, baseline_id, failed_reason 
              FROM patchsets WHERE status = 'Pending' ORDER BY date ASC LIMIT ?",
             libsql::params![limit as i64],
         ).await?;
@@ -2105,6 +2155,7 @@ impl Database {
                 findings_high: None,
                 findings_critical: None,
                 baseline_id: row.get(9).ok(),
+                failed_reason: row.get(10).ok(),
             });
         }
         Ok(patchsets)
@@ -2115,6 +2166,67 @@ impl Database {
             .execute(
                 "UPDATE patchsets SET status = ? WHERE id = ?",
                 libsql::params![status, id],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn create_fetching_patchset(&self, article_id: &str, subject: &str) -> Result<i64> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
+
+        let root_msg_id = format!("{}@sashiko.local", article_id);
+
+        // 1. Check if it already exists
+        let mut rows = self.conn.query(
+            "SELECT id, status FROM patchsets WHERE cover_letter_message_id = ?",
+            libsql::params![root_msg_id.clone()]
+        ).await?;
+
+        if let Ok(Some(row)) = rows.next().await {
+            let id: i64 = row.get(0)?;
+            let status: String = row.get(1).unwrap_or_default();
+            
+            // Only reset to Fetching if it failed or is currently fetching.
+            // We don't want to reset if it is already Incomplete, Pending, or Reviewed.
+            if status == "Failed" || status == "Fetching" {
+                self.conn.execute(
+                    "UPDATE patchsets SET status = 'Fetching', failed_reason = NULL WHERE id = ?",
+                    libsql::params![id]
+                ).await?;
+            }
+            return Ok(id);
+        }
+
+        // 2. Ensure a placeholder thread and message exist to satisfy Foreign Key constraints
+        let thread_id = self.ensure_thread_for_message(&root_msg_id, now).await?;
+
+        // 3. Create the fetching patchset
+        self.conn
+            .execute(
+                "INSERT INTO patchsets (thread_id, cover_letter_message_id, subject, status, date) 
+                     VALUES (?, ?, ?, 'Fetching', ?)",
+                libsql::params![thread_id, root_msg_id, subject, now],
+            )
+            .await?;
+
+        let mut rows = self
+            .conn
+            .query("SELECT last_insert_rowid()", libsql::params![])
+            .await?;
+        if let Ok(Some(row)) = rows.next().await {
+            Ok(row.get(0)?)
+        } else {
+            Err(anyhow::anyhow!("Failed to get patchset ID"))
+        }
+    }
+    pub async fn update_patchset_error(&self, article_id: &str, error: &str) -> Result<()> {
+        let root_msg_id = format!("{}@sashiko.local", article_id);
+        self.conn
+            .execute(
+                "UPDATE patchsets SET status = 'Failed', failed_reason = ? WHERE cover_letter_message_id = ?",
+                libsql::params![error, root_msg_id],
             )
             .await?;
         Ok(())
@@ -2222,7 +2334,8 @@ mod tests {
                 "cc",
                 Some(1),
                 1,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap();
@@ -2258,7 +2371,8 @@ mod tests {
                 "cc",
                 Some(1),
                 0,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap();
@@ -2286,7 +2400,8 @@ mod tests {
             "cc",
             Some(1),
             2,
-            None, true
+            None,
+            true,
         )
         .await
         .unwrap();
@@ -2309,7 +2424,8 @@ mod tests {
                 "cc",
                 Some(1),
                 0,
-                None, false
+                None,
+                false,
             )
             .await
             .unwrap();
@@ -2331,7 +2447,8 @@ mod tests {
                 "cc",
                 Some(2),
                 0,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap();
@@ -2365,7 +2482,8 @@ mod tests {
                 "",
                 Some(1),
                 1,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2390,7 +2508,8 @@ mod tests {
                 "",
                 Some(1),
                 3,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2430,7 +2549,8 @@ mod tests {
                 "",
                 Some(1),
                 3,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2458,7 +2578,8 @@ mod tests {
                 "",
                 Some(1),
                 2,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2503,7 +2624,8 @@ mod tests {
                     "cc",
                     None,
                     idx as u32,
-                    None, true
+                    None,
+                    true,
                 )
                 .await
                 .unwrap()
@@ -2554,7 +2676,8 @@ mod tests {
                 "",
                 None,
                 1,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2629,7 +2752,8 @@ mod tests {
                 "",
                 Some(6),
                 0,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2664,7 +2788,8 @@ mod tests {
                 "",
                 None,
                 1,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2716,7 +2841,8 @@ mod tests {
                 "",
                 None,
                 1,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2751,7 +2877,8 @@ mod tests {
                 "",
                 None,
                 1,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2801,7 +2928,8 @@ mod tests {
                 "",
                 None,
                 0,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2836,7 +2964,8 @@ mod tests {
                 "",
                 None,
                 1,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2886,7 +3015,8 @@ mod tests {
                 "",
                 Some(5),
                 1,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2921,7 +3051,8 @@ mod tests {
                 "",
                 Some(6),
                 1,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -2971,7 +3102,8 @@ mod tests {
                 "",
                 Some(3),
                 0,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -3006,7 +3138,8 @@ mod tests {
                 "",
                 Some(3),
                 1,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -3041,7 +3174,8 @@ mod tests {
                 "",
                 Some(3),
                 2,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -3089,7 +3223,8 @@ mod tests {
                 "",
                 Some(3),
                 0,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -3123,8 +3258,7 @@ mod tests {
             .create_patchset(
                 thread_id, None, subject, author, 80005, 17, 1, "", "",
                 parsed_ver, // Pass the result of the potentially buggy parser
-                1,
-                None, true
+                1, None, true,
             )
             .await
             .unwrap()
@@ -3174,7 +3308,8 @@ mod tests {
                 "",
                 None,
                 1,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -3231,7 +3366,8 @@ mod tests {
                 "",
                 None,
                 2,
-                None, true
+                None,
+                true,
             )
             .await
             .unwrap()
@@ -3320,34 +3456,67 @@ mod tests {
     #[tokio::test]
     async fn test_has_failed_review_logic() {
         let db = setup_db().await;
-        
+
         // Setup patchset
         let thread_id = db.create_thread("root", "Subject", 100).await.unwrap();
-        db.create_message("msg1", thread_id, None, "Author", "Subject", 100, "", "", "", None, None).await.unwrap();
-        let ps_id = db.create_patchset(thread_id, Some("msg1"), "Subject", "Author", 100, 1, 1, "", "", None, 1, None, true).await.unwrap().unwrap();
+        db.create_message(
+            "msg1", thread_id, None, "Author", "Subject", 100, "", "", "", None, None,
+        )
+        .await
+        .unwrap();
+        let ps_id = db
+            .create_patchset(
+                thread_id,
+                Some("msg1"),
+                "Subject",
+                "Author",
+                100,
+                1,
+                1,
+                "",
+                "",
+                None,
+                1,
+                None,
+                true,
+            )
+            .await
+            .unwrap()
+            .unwrap();
         let patch_id = db.create_patch(ps_id, "msg1", 1, "diff").await.unwrap();
 
         // 1. Initial State: No reviews
         assert!(!db.has_failed_review(ps_id, patch_id, None).await.unwrap());
 
         // 2. Failed Review (No interaction) -> Should be detected
-        let review_id = db.create_review(ps_id, Some(patch_id), "p", "m", None, None).await.unwrap();
-        db.update_review_status(review_id, "FailedToApply", None).await.unwrap();
-        
+        let review_id = db
+            .create_review(ps_id, Some(patch_id), "p", "m", None, None)
+            .await
+            .unwrap();
+        db.update_review_status(review_id, "FailedToApply", None)
+            .await
+            .unwrap();
+
         assert!(db.has_failed_review(ps_id, patch_id, None).await.unwrap());
 
         // 3. Status "Failed" (No interaction) -> Should be detected
-        db.update_review_status(review_id, "Failed", None).await.unwrap();
+        db.update_review_status(review_id, "Failed", None)
+            .await
+            .unwrap();
         assert!(db.has_failed_review(ps_id, patch_id, None).await.unwrap());
 
         // 4. Status "Reviewed" (Success) -> Should NOT be detected
-        db.update_review_status(review_id, "Reviewed", None).await.unwrap();
+        db.update_review_status(review_id, "Reviewed", None)
+            .await
+            .unwrap();
         assert!(!db.has_failed_review(ps_id, patch_id, None).await.unwrap());
 
         // 5. Status "Failed" WITH interaction_id -> Should NOT be detected (reached AI)
         // Revert to Failed first
-        db.update_review_status(review_id, "Failed", None).await.unwrap();
-        
+        db.update_review_status(review_id, "Failed", None)
+            .await
+            .unwrap();
+
         // Create interaction first to satisfy FK
         db.create_ai_interaction(AiInteractionParams {
             id: "int_id",
@@ -3360,11 +3529,23 @@ mod tests {
             tokens_in: 0,
             tokens_out: 0,
             tokens_cached: 0,
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // Set interaction_id
-        db.complete_review(review_id, "Failed", "desc", None, Some("int_id"), None, None).await.unwrap();
-        
+        db.complete_review(
+            review_id,
+            "Failed",
+            "desc",
+            None,
+            Some("int_id"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
         assert!(!db.has_failed_review(ps_id, patch_id, None).await.unwrap());
     }
 }

@@ -67,6 +67,10 @@ impl GitWorktree {
 
         let mut child = Command::new("git")
             .current_dir(&self.path)
+            .env("GIT_AUTHOR_NAME", "Sashiko Bot")
+            .env("GIT_AUTHOR_EMAIL", "sashiko@localhost")
+            .env("GIT_COMMITTER_NAME", "Sashiko Bot")
+            .env("GIT_COMMITTER_EMAIL", "sashiko@localhost")
             .args(["-c", "safe.bareRepository=all"])
             .arg("am")
             .arg("--3way")
@@ -496,7 +500,7 @@ pub async fn get_range_base(repo_path: &Path, rev_range: &str) -> Result<String>
         if !parts[0].is_empty() {
             parts[0].to_string()
         } else {
-             "HEAD".to_string()
+            "HEAD".to_string()
         }
     } else {
         // Single commit: treated as <since>..HEAD by format-patch, so base is the commit itself
