@@ -109,7 +109,9 @@ pub fn parse_email(raw_email: &[u8]) -> Result<(PatchsetMetadata, Option<Patch>)
     let is_reply = subject_clean.starts_with("re:")
         || subject_clean.starts_with("fwd:")
         || subject_clean.starts_with("forwarded:")
-        || subject_clean.starts_with("aw:"); // German 'Antwort'
+        || subject_clean.starts_with("aw:") // German 'Antwort'
+        || subject_clean.starts_with("回复:") // Chinese 'Re'
+        || subject_clean.starts_with("回复："); // Chinese 'Re' with full-width colon
     let has_patch_tag = subject_clean.contains("patch") || subject_clean.contains("rfc");
     let has_diff = !diff.is_empty();
 
@@ -138,7 +140,7 @@ pub fn parse_email(raw_email: &[u8]) -> Result<(PatchsetMetadata, Option<Patch>)
         body: body.clone(),
     };
 
-    let patch = if has_diff {
+    let patch = if has_diff && index != 0 {
         Some(Patch {
             message_id,
             body,
@@ -153,23 +155,42 @@ pub fn parse_email(raw_email: &[u8]) -> Result<(PatchsetMetadata, Option<Patch>)
 }
 
 fn parse_subject_index(subject: &str) -> (u32, u32) {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    // Allow [Anything 1/2 Anything] OR just 1/2
-    // We prioritize the bracketed version, but allow loose M/N if bounded.
-    let re = RE.get_or_init(|| Regex::new(r"(?:\[.*?(\d+)/(\d+).*?\]|\b(\d+)/(\d+)\b)").unwrap());
+    static RE_BRACKETS: OnceLock<Regex> = OnceLock::new();
+    // Match [ ... M/N ... ]
+    let re_brackets = RE_BRACKETS.get_or_init(|| Regex::new(r"\[.*?(\d+)/(\d+).*?\]").unwrap());
 
-    if let Some(caps) = re.captures(subject) {
+    if let Some(caps) = re_brackets.captures(subject) {
         if let (Some(i), Some(t)) = (caps.get(1), caps.get(2)) {
             let index = i.as_str().parse().unwrap_or(1);
             let total = t.as_str().parse().unwrap_or(1);
             return (index, total);
         }
-        if let (Some(i), Some(t)) = (caps.get(3), caps.get(4)) {
+    }
+
+    static RE_LOOSE: OnceLock<Regex> = OnceLock::new();
+    // Match PATCH M/N or RFC M/N (case insensitive)
+    let re_loose = RE_LOOSE.get_or_init(|| Regex::new(r"(?i)\b(?:PATCH|RFC|RESEND)\s+(\d+)/(\d+)\b").unwrap());
+
+    if let Some(caps) = re_loose.captures(subject) {
+        if let (Some(i), Some(t)) = (caps.get(1), caps.get(2)) {
             let index = i.as_str().parse().unwrap_or(1);
             let total = t.as_str().parse().unwrap_or(1);
             return (index, total);
         }
     }
+    
+    // Check cleaned subject for "1/2" at start (Handles "[PATCH] 1/2")
+    let cleaned = clean_subject(subject);
+    static RE_START: OnceLock<Regex> = OnceLock::new();
+    let re_start = RE_START.get_or_init(|| Regex::new(r"^\s*(\d+)/(\d+)\b").unwrap());
+    if let Some(caps) = re_start.captures(&cleaned) {
+        if let (Some(i), Some(t)) = (caps.get(1), caps.get(2)) {
+            let index = i.as_str().parse().unwrap_or(1);
+            let total = t.as_str().parse().unwrap_or(1);
+            return (index, total);
+        }
+    }
+
     (1, 1)
 }
 
@@ -243,7 +264,7 @@ pub fn clean_subject(subject: &str) -> String {
 
     // 2. Remove Re:, Fwd: prefixes (case insensitive)
     let mut cleaned = no_brackets.trim().to_string();
-    let prefixes = ["re:", "fwd:", "aw:", "forwarded:"];
+    let prefixes = ["re:", "fwd:", "aw:", "forwarded:", "回复:", "回复："];
 
     let mut changed = true;
     while changed {
@@ -308,6 +329,21 @@ mod tests {
     }
 
     #[test]
+    fn test_clean_subject_chinese() {
+        assert_eq!(clean_subject("回复: [PATCH] Fix bug"), "Fix bug");
+        assert_eq!(clean_subject("回复：[PATCH] Fix bug"), "Fix bug");
+        assert_eq!(clean_subject("回复：回复：[PATCH] Fix bug"), "Fix bug");
+    }
+
+    #[test]
+    fn test_chinese_reply() {
+        let raw = b"Message-ID: <reply>\r\nSubject: \xE5\x9B\x9E\xE5\xA4\x8D: [PATCH] fix\r\n\r\nBody";
+        // \xE5\x9B\x9E\xE5\xA4\x8D is "回复" in UTF-8.
+        let (meta, _) = parse_email(raw).unwrap();
+        assert!(!meta.is_patch_or_cover, "Chinese reply should not be a patchset");
+    }
+
+    #[test]
     fn test_author_parsing() {
         let raw =
             b"Message-ID: <123>\r\nFrom: Test User <test@example.com>\r\nSubject: Test\r\n\r\nBody";
@@ -365,8 +401,17 @@ mod tests {
     #[test]
     fn test_cover_letter() {
         let raw = b"Message-ID: <789>\r\nSubject: [PATCH 0/5] fix bug\r\n\r\nCover letter body";
-        let (meta, _) = parse_email(raw).unwrap();
+        let (meta, patch) = parse_email(raw).unwrap();
         assert!(meta.is_patch_or_cover);
+        assert!(patch.is_none());
+    }
+
+    #[test]
+    fn test_cover_letter_with_diff() {
+        let raw = b"Message-ID: <cover_with_diff>\r\nSubject: [PATCH 0/5] fix bug\r\n\r\nExplanation:\ndiff --git a/file b/file\nindex...";
+        let (meta, patch) = parse_email(raw).unwrap();
+        assert!(meta.is_patch_or_cover);
+        assert!(patch.is_none(), "Cover letter (index 0) with diff should NOT be a patch");
     }
 
     #[test]
@@ -463,14 +508,14 @@ mod tests {
 
     #[test]
     fn test_loose_patch_parsing() {
-        // Case 1: Count outside brackets
-        let subject = "[PATCH] 1/2: Subject";
+        // Case 1: PATCH prefix
+        let subject = "PATCH 1/2: Subject";
         let (index, total) = parse_subject_index(subject);
         assert_eq!(index, 1);
         assert_eq!(total, 2);
 
-        // Case 2: No brackets
-        let subject = "PATCH 1/2: Subject";
+        // Case 2: Start of string
+        let subject = "1/2: Subject";
         let (index, total) = parse_subject_index(subject);
         assert_eq!(index, 1);
         assert_eq!(total, 2);
@@ -480,6 +525,12 @@ mod tests {
         let (index, total) = parse_subject_index(subject);
         assert_eq!(index, 1);
         assert_eq!(total, 2);
+        
+        // Case 4: Regression test for false positive (508/512)
+        let subject = "[PATCH v3] serial: 8250_pci: Fix broken RS485 for F81504/508/512";
+        let (index, total) = parse_subject_index(subject);
+        assert_eq!(index, 1);
+        assert_eq!(total, 1); // Should be 1/1, NOT 508/512
     }
 
     #[test]
