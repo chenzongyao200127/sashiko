@@ -192,6 +192,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         diff,
                         base_commit,
                         timestamp,
+                        index,
+                        total,
                     } => {
                         // Pre-parsed patch handling
                         let metadata = sashiko::patch::PatchsetMetadata {
@@ -201,8 +203,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             date: timestamp,
                             in_reply_to: None,
                             references: vec![],
-                            index: 1, // Treat as single patch
-                            total: 1,
+                            index,
+                            total,
                             to: "submitted".to_string(),
                             cc: "".to_string(),
                             is_patch_or_cover: true,
@@ -214,7 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             message_id: article_id.clone(),
                             body: message,
                             diff,
-                            part_index: 1,
+                            part_index: index,
                         });
 
                         if let Err(e) = tx

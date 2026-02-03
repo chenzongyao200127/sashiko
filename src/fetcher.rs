@@ -113,25 +113,131 @@ impl FetchAgent {
                 }
             }
 
-            // 3. Process each commit
-            for commit in commit_list {
-                match self.extract_patch(&commit).await {
-                    Ok(event) => {
-                        if let Err(e) = self.main_tx.send(event).await {
-                            error!("Failed to send PatchSubmitted event: {}", e);
-                        } else {
-                            info!("Successfully submitted remote patch {}", commit);
+            // 3. Process each commit or range
+            for commit_or_range in commit_list {
+                if commit_or_range.contains("..") {
+                    // It's a range
+                    let range = &commit_or_range;
+
+                    // 1. Count commits
+                    let count_output = Command::new("git")
+                        .current_dir(&self.repo_path)
+                        .args(["-c", "safe.bareRepository=all"])
+                        .args(["rev-list", "--count", range])
+                        .output()
+                        .await;
+
+                    let count = match count_output {
+                        Ok(output) if output.status.success() => {
+                            String::from_utf8_lossy(&output.stdout)
+                                .trim()
+                                .parse::<u32>()
+                                .unwrap_or(0)
                         }
-                    }
-                    Err(e) => {
-                        error!("Failed to extract patch {}: {}", commit, e);
+                        _ => {
+                            let _ = self
+                                .main_tx
+                                .send(Event::IngestionFailed {
+                                    article_id: range.clone(),
+                                    error: "Failed to resolve git range count".to_string(),
+                                })
+                                .await;
+                            continue;
+                        }
+                    };
+
+                    if count == 0 {
                         let _ = self
                             .main_tx
                             .send(Event::IngestionFailed {
-                                article_id: commit,
-                                error: format!("Failed to extract patch: {}", e),
+                                article_id: range.clone(),
+                                error: "Git range is empty".to_string(),
                             })
                             .await;
+                        continue;
+                    }
+
+                    if count > 100 {
+                        let _ = self
+                            .main_tx
+                            .send(Event::IngestionFailed {
+                                article_id: range.clone(),
+                                error: format!(
+                                    "Git range contains {} commits, which exceeds the limit of 100",
+                                    count
+                                ),
+                            })
+                            .await;
+                        continue;
+                    }
+
+                    // 2. Get list of SHAs
+                    let list_output = Command::new("git")
+                        .current_dir(&self.repo_path)
+                        .args(["-c", "safe.bareRepository=all"])
+                        .args(["rev-list", "--reverse", range])
+                        .output()
+                        .await;
+
+                    let shas = match list_output {
+                        Ok(output) if output.status.success() => {
+                            String::from_utf8_lossy(&output.stdout)
+                                .lines()
+                                .map(|s| s.to_string())
+                                .collect::<Vec<_>>()
+                        }
+                        _ => {
+                            let _ = self
+                                .main_tx
+                                .send(Event::IngestionFailed {
+                                    article_id: range.clone(),
+                                    error: "Failed to resolve git range SHAs".to_string(),
+                                })
+                                .await;
+                            continue;
+                        }
+                    };
+
+                    // 3. Process each SHA
+                    for (i, sha) in shas.iter().enumerate() {
+                        match self.extract_patch(sha, range, (i + 1) as u32, count).await {
+                            Ok(event) => {
+                                if let Err(e) = self.main_tx.send(event).await {
+                                    error!("Failed to send PatchSubmitted event: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed to extract patch {} from range {}: {}",
+                                    sha, range, e
+                                );
+                            }
+                        }
+                    }
+                    info!("Successfully submitted remote range {}", range);
+                } else {
+                    // Single commit
+                    match self
+                        .extract_patch(&commit_or_range, &commit_or_range, 1, 1)
+                        .await
+                    {
+                        Ok(event) => {
+                            if let Err(e) = self.main_tx.send(event).await {
+                                error!("Failed to send PatchSubmitted event: {}", e);
+                            } else {
+                                info!("Successfully submitted remote patch {}", commit_or_range);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to extract patch {}: {}", commit_or_range, e);
+                            let _ = self
+                                .main_tx
+                                .send(Event::IngestionFailed {
+                                    article_id: commit_or_range,
+                                    error: format!("Failed to extract patch: {}", e),
+                                })
+                                .await;
+                        }
                     }
                 }
             }
@@ -227,7 +333,13 @@ impl FetchAgent {
         Ok(())
     }
 
-    async fn extract_patch(&self, commit: &str) -> Result<Event> {
+    async fn extract_patch(
+        &self,
+        commit: &str,
+        article_id: &str,
+        index: u32,
+        total: u32,
+    ) -> Result<Event> {
         // Format: AuthorName%nAuthorEmail%nSubject%nBody...%n---SASHIKO-END-HEADER---%nDiff...
         let format = "format:%an%n%ae%n%s%n%b%n---SASHIKO-END-HEADER---";
 
@@ -267,7 +379,7 @@ impl FetchAgent {
 
         Ok(Event::PatchSubmitted {
             group: "git-fetch".to_string(),
-            article_id: commit.to_string(),
+            article_id: article_id.to_string(),
             subject: subject.to_string(),
             author,
             message,
@@ -276,6 +388,8 @@ impl FetchAgent {
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs() as i64,
+            index,
+            total,
         })
     }
 }
@@ -340,7 +454,7 @@ mod tests {
             .await?;
         let head = String::from_utf8(output.stdout)?.trim().to_string();
 
-        let event = agent.extract_patch(&head).await?;
+        let event = agent.extract_patch(&head, &head, 1, 1).await?;
 
         match event {
             Event::PatchSubmitted {

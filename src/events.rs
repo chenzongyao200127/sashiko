@@ -19,6 +19,8 @@ pub enum Event {
         diff: String,
         base_commit: Option<String>,
         timestamp: i64,
+        index: u32,
+        total: u32,
     },
     IngestionFailed {
         article_id: String,
