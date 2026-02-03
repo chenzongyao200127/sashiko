@@ -193,14 +193,14 @@ pub fn parse_subject_version(subject: &str) -> Option<u32> {
 pub fn clean_subject(subject: &str) -> String {
     static RE_BRACKETS: OnceLock<Regex> = OnceLock::new();
     let re = RE_BRACKETS.get_or_init(|| Regex::new(r"\[.*?\]").unwrap());
-    
+
     // 1. Remove [...] blocks
     let no_brackets = re.replace_all(subject, "");
-    
+
     // 2. Remove Re:, Fwd: prefixes (case insensitive)
     let mut cleaned = no_brackets.trim().to_string();
     let prefixes = ["re:", "fwd:", "aw:", "forwarded:"];
-    
+
     let mut changed = true;
     while changed {
         changed = false;
@@ -215,13 +215,39 @@ pub fn clean_subject(subject: &str) -> String {
             }
         }
     }
-    
+
     cleaned
+}
+
+pub fn extract_email(author: &str) -> String {
+    if let Some(start) = author.find('<') {
+        if let Some(end) = author.find('>') {
+            if end > start {
+                return author[start + 1..end].trim().to_string();
+            }
+        }
+    }
+    author.trim().to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extract_email() {
+        assert_eq!(
+            extract_email("Name <email@example.com>"),
+            "email@example.com"
+        );
+        assert_eq!(extract_email("email@example.com"), "email@example.com");
+        assert_eq!(extract_email(" <email@example.com> "), "email@example.com");
+        assert_eq!(
+            extract_email("Name < email@example.com >"),
+            "email@example.com"
+        );
+        assert_eq!(extract_email("Invalid < Format"), "Invalid < Format");
+    }
 
     #[test]
     fn test_clean_subject() {
@@ -231,7 +257,10 @@ mod tests {
         assert_eq!(clean_subject("Re: [PATCH] Fix bug"), "Fix bug");
         assert_eq!(clean_subject("[PATCH] Re: Fix bug"), "Fix bug"); // "[PATCH] " removed, then "Re: Fix bug" -> "Fix bug"
         assert_eq!(clean_subject("Subject only"), "Subject only");
-        assert_eq!(clean_subject("[RFC] [PATCH v3] Complex subject"), "Complex subject");
+        assert_eq!(
+            clean_subject("[RFC] [PATCH v3] Complex subject"),
+            "Complex subject"
+        );
     }
 
     #[test]

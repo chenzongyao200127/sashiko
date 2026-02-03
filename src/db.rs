@@ -1506,11 +1506,11 @@ impl Database {
             let index_collision = if part_index == 0 {
                 existing_cover_id.is_some() && existing_cover_id.as_deref() != Some(message_id)
             } else {
-                 let mut p_rows = self.conn.query(
+                let mut p_rows = self.conn.query(
                      "SELECT 1 FROM patches WHERE patchset_id = ? AND part_index = ? AND message_id != ?",
                      libsql::params![id, part_index, message_id]
                  ).await?;
-                 p_rows.next().await.ok().flatten().is_some()
+                p_rows.next().await.ok().flatten().is_some()
             };
 
             // Matching logic:
@@ -1533,7 +1533,8 @@ impl Database {
                 } else {
                     // Allow merging 0/1 (cover) and 1/1 (patch) even if subjects differ
                     if (part_index == 0 && existing_subject_index == 1)
-                        || (part_index == 1 && existing_subject_index == 0) {
+                        || (part_index == 1 && existing_subject_index == 0)
+                    {
                         true
                     } else {
                         clean_new == clean_old
@@ -1552,7 +1553,8 @@ impl Database {
             };
 
             // Relaxed author check logic
-            let author_match = existing_author == author;
+            let author_match = crate::patch::extract_email(&existing_author)
+                == crate::patch::extract_email(author);
             let series_match = total_parts > 1 && total_parts == existing_total;
 
             let author_or_series_match = if strict_author {

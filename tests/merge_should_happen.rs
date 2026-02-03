@@ -13,28 +13,31 @@ async fn setup_db() -> Arc<Database> {
 }
 
 #[tokio::test]
-async fn test_merge_different_series_same_author_should_not_merge() {
+async fn test_merge_same_email_different_name_format() {
     let db = setup_db().await;
 
     // 1. Create Thread
-    let t1 = db.create_thread("root_bug", "Subject", 1000).await.unwrap();
+    let t1 = db
+        .create_thread("root_merge", "Subject", 1000)
+        .await
+        .unwrap();
 
-    // 2. Create Patchset Series A - Part 1/2
-    // [PATCH 1/2] Series A
+    // 2. Create Patchset Part 1
+    // "Alexander Graf <graf@amazon.com>"
     let ps1 = db
         .create_patchset(
             t1,
             None,
-            "msg_a_1",
-            "[PATCH 1/2] Series A",
-            "Author Same",
+            "msg_merge_1",
+            "[PATCH 1/2] Series Merge",
+            "Alexander Graf <graf@amazon.com>",
             1000,
-            2, // total parts
+            2,
             0,
             "",
             "",
             None,
-            1, // index
+            1,
             None,
             true,
         )
@@ -42,23 +45,22 @@ async fn test_merge_different_series_same_author_should_not_merge() {
         .unwrap()
         .unwrap();
 
-    // 3. Create Patchset Series B - Part 1/2
-    // [PATCH 1/2] Series B
-    // Same author, same total parts, same version (implicit), close time
+    // 3. Create Patchset Part 2
+    // "graf@amazon.com" (No name)
     let ps2 = db
         .create_patchset(
             t1,
             None,
-            "msg_b_1",
-            "[PATCH 1/2] Series B",
-            "Author Same",
-            1010, // 10s later
-            2,    // total parts
+            "msg_merge_2",
+            "[PATCH 2/2] Series Merge",
+            "graf@amazon.com",
+            1010,
+            2,
             0,
             "",
             "",
             None,
-            1, // index
+            2,
             None,
             true,
         )
@@ -66,10 +68,9 @@ async fn test_merge_different_series_same_author_should_not_merge() {
         .unwrap()
         .unwrap();
 
-    // 4. Assert they are DIFFERENT (should NOT merge)
-    // If the bug exists, ps1 will equal ps2
-    assert_ne!(
+    // 4. Assert they MERGED (ps1 == ps2)
+    assert_eq!(
         ps1, ps2,
-        "Different series (Series A vs Series B) from same author should NOT merge"
+        "Patchsets with same email but different name format SHOULD merge"
     );
 }
