@@ -119,7 +119,7 @@ impl ToolBox {
             },
             FunctionDeclaration {
                 name: "write_file".to_string(),
-                description: "Write content to a file in the worktree. Primarily used for 'review-inline.txt'."
+                description: "Write content to a file in the worktree. Only 'review-metadata.json' and 'review-inline.txt' are allowed. Overwrites existing files."
                     .to_string(),
                 parameters: json!({
                     "type": "object",

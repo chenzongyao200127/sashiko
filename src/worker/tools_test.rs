@@ -112,6 +112,28 @@ mod tests {
     }
 
     #[test]
+    fn test_write_file_overwrite() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let worktree_path = temp_dir.path().to_path_buf();
+        let toolbox = ToolBox::new(worktree_path.clone(), None);
+
+        let rt = Runtime::new().unwrap();
+
+        let filename = "review-inline.txt";
+        let initial_content = "Initial content";
+        std::fs::write(worktree_path.join(filename), initial_content).unwrap();
+
+        let new_content = "New overwritten content";
+        let args = json!({ "path": filename, "content": new_content });
+
+        let result = rt.block_on(toolbox.call("write_file", args)).unwrap();
+        assert_eq!(result["status"], "success");
+
+        let written_content = std::fs::read_to_string(worktree_path.join(filename)).unwrap();
+        assert_eq!(written_content, new_content);
+    }
+
+    #[test]
     fn test_write_file_forbidden() {
         let temp_dir = tempfile::tempdir().unwrap();
         let worktree_path = temp_dir.path().to_path_buf();

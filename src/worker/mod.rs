@@ -167,7 +167,9 @@ impl Worker {
                     let diff = p["diff"].as_str().unwrap_or("");
                     let author = p["author"].as_str().unwrap_or("Unknown");
                     let date = p["date_string"].as_str().unwrap_or("");
-                    let commit_id = p["commit_id"].as_str().unwrap_or("0000000000000000000000000000000000000000");
+                    let commit_id = p["commit_id"]
+                        .as_str()
+                        .unwrap_or("0000000000000000000000000000000000000000");
 
                     patch_content.push_str(&format!("commit {}\n", commit_id));
                     patch_content.push_str(&format!("Author: {}\n", author));

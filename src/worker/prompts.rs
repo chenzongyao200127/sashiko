@@ -70,10 +70,7 @@ impl PromptRegistry {
     /// so we don't include review-core.md content.
     pub async fn get_user_task_prompt(&self, use_cache: bool) -> Result<String> {
         if use_cache {
-            Ok(format!(
-                "{}\nAnalyze the provided patch:",
-                SYSTEM_IDENTITY
-            ))
+            Ok(format!("{}\nAnalyze the provided patch:", SYSTEM_IDENTITY))
         } else {
             let review_core = self.get_review_core().await?;
             Ok(format!(

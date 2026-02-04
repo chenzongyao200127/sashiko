@@ -160,10 +160,11 @@ async fn main() -> Result<()> {
             match worktree.apply_patch(&mbox).await {
                 Ok(_) => {
                     applied_via_am = true;
-                    if let Ok(sha) = sashiko::git_ops::get_commit_hash(&worktree.path, "HEAD").await {
+                    if let Ok(sha) = sashiko::git_ops::get_commit_hash(&worktree.path, "HEAD").await
+                    {
                         patch_shas.insert(p.index, sha.clone());
                         if let Ok(show) = worktree.get_commit_show(&sha).await {
-                             patch_shows.insert(p.index, show);
+                            patch_shows.insert(p.index, show);
                         }
                     }
                     patch_results.push(json!({
@@ -273,29 +274,38 @@ async fn main() -> Result<()> {
                 args.gemini_cache,
             );
 
-            let rich_patches: Vec<serde_json::Value> = patches_to_review.iter().map(|p| {
-                let date_str = if let Some(ts) = p.date {
-                     std::process::Command::new("date")
-                        .arg("-R")
-                        .arg("-d")
-                        .arg(format!("@{}", ts))
-                        .output()
-                        .ok()
-                        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
+            let rich_patches: Vec<serde_json::Value> = patches_to_review
+                .iter()
+                .map(|p| {
+                    let date_str = if let Some(ts) = p.date {
+                        std::process::Command::new("date")
+                            .arg("-R")
+                            .arg("-d")
+                            .arg(format!("@{}", ts))
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                if o.status.success() {
+                                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
 
-                json!({
-                    "subject": p.subject,
-                    "author": p.author,
-                    "date_string": date_str,
-                    "diff": p.diff,
-                    "commit_id": patch_shas.get(&p.index).cloned(),
-                    "git_show": patch_shows.get(&p.index).cloned()
+                    json!({
+                        "subject": p.subject,
+                        "author": p.author,
+                        "date_string": date_str,
+                        "diff": p.diff,
+                        "commit_id": patch_shas.get(&p.index).cloned(),
+                        "git_show": patch_shows.get(&p.index).cloned()
+                    })
                 })
-            }).collect();
+                .collect();
 
             let patchset_val = json!({
                 "id": patchset_id,
