@@ -36,7 +36,8 @@ pub struct Worker {
     tools: ToolBox,
     prompts: PromptRegistry,
     history: Vec<Content>,
-    max_input_words: usize,
+    history_tokens: Vec<usize>,
+    max_input_tokens: usize,
     max_interactions: usize,
     temperature: f32,
     cache_name: Option<String>,
@@ -59,7 +60,7 @@ impl Worker {
         client: Box<dyn GenAiClient>,
         tools: ToolBox,
         prompts: PromptRegistry,
-        max_input_words: usize,
+        max_input_tokens: usize,
         max_interactions: usize,
         temperature: f32,
         cache_name: Option<String>,
@@ -69,7 +70,8 @@ impl Worker {
             tools,
             prompts,
             history: Vec::new(),
-            max_input_words,
+            history_tokens: Vec::new(),
+            max_input_tokens,
             max_interactions,
             temperature,
             cache_name,
@@ -85,9 +87,7 @@ impl Worker {
         }
 
         // Count history
-        for content in &self.history {
-            count += self.estimate_content_tokens(content);
-        }
+        count += self.history_tokens.iter().sum::<usize>();
 
         count
     }
@@ -117,7 +117,7 @@ impl Worker {
         system_instruction: &Option<Content>,
     ) -> (Vec<Content>, Vec<Content>) {
         let before_pruning = self.history.clone();
-        let limit = self.max_input_words; // Treating max_input_words as max_tokens for now
+        let limit = self.max_input_tokens;
         let mut current_tokens = self.estimate_history_tokens(system_instruction);
 
         debug!(
@@ -134,8 +134,10 @@ impl Worker {
         // Prune oldest messages first (after index 0).
         while current_tokens > limit && self.history.len() > 1 {
             // Remove the oldest message after the prompt.
-            let removed = self.history.remove(1);
-            let removed_tokens = self.estimate_content_tokens(&removed);
+            let removed_idx = 1;
+            let _removed = self.history.remove(removed_idx);
+            let removed_tokens = self.history_tokens.remove(removed_idx);
+            
             current_tokens = current_tokens.saturating_sub(removed_tokens);
             debug!(
                 "Pruned message with {} tokens. New total: {}",
@@ -186,8 +188,8 @@ impl Worker {
             }
         }
 
-        // Truncate if too large. Using max_input_words as token limit approximation.
-        let truncated_patch = Truncator::truncate_diff(&patch_content, self.max_input_words);
+        // Truncate if too large.
+        let truncated_patch = Truncator::truncate_diff(&patch_content, self.max_input_tokens);
 
         initial_user_message.push('\n');
         initial_user_message.push_str(&truncated_patch);
@@ -205,13 +207,15 @@ impl Worker {
             }],
         };
 
-        self.history.push(Content {
+        let initial_content = Content {
             role: "user".to_string(),
             parts: vec![Part::Text {
                 text: initial_user_message,
                 thought_signature: None,
             }],
-        });
+        };
+        self.history_tokens.push(self.estimate_content_tokens(&initial_content));
+        self.history.push(initial_content);
 
         let mut turns = 0;
         let mut total_tokens_in = 0;
@@ -367,6 +371,7 @@ impl Worker {
             };
 
             let content = &candidate.content;
+            self.history_tokens.push(self.estimate_content_tokens(content));
             self.history.push(content.clone());
 
             // Check for function calls
@@ -456,6 +461,7 @@ impl Worker {
                     role: "function".to_string(),
                     parts: function_responses,
                 };
+                self.history_tokens.push(self.estimate_content_tokens(&response_content));
                 self.history.push(response_content);
                 // Continue loop to get model response to tool outputs
             } else {

@@ -248,7 +248,7 @@ async fn main() -> Result<()> {
                 client,
                 tools,
                 prompts,
-                settings.ai.max_input_words,
+                settings.ai.max_input_tokens,
                 settings.ai.max_interactions,
                 settings.ai.temperature,
                 args.gemini_cache,

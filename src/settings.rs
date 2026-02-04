@@ -30,7 +30,7 @@ pub struct NntpSettings {
     pub groups: Vec<String>,
 }
 
-fn default_max_input_words() -> usize {
+fn default_max_input_tokens() -> usize {
     150_000
 }
 
@@ -39,8 +39,8 @@ fn default_max_input_words() -> usize {
 pub struct AiSettings {
     pub provider: String,
     pub model: String,
-    #[serde(default = "default_max_input_words")]
-    pub max_input_words: usize,
+    #[serde(default = "default_max_input_tokens")]
+    pub max_input_tokens: usize,
     #[serde(default = "default_max_interactions")]
     pub max_interactions: usize,
     #[serde(default = "default_temperature")]
