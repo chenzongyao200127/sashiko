@@ -160,7 +160,7 @@ impl Ingestor {
         if self.nntp_enabled {
             self.run_nntp().await?;
         } else {
-            info!("NNTP ingestor disabled (default). Use --nntp to enable.");
+            info!("NNTP ingestor disabled (default). Use --track to enable.");
         }
 
         Ok(())

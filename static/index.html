@@ -669,33 +669,46 @@
             totalPages: 1,
             searchQuery: '',
             selectedIndex: -1,
-            stats: null
+            stats: null,
+            mailingLists: [],
+            selectedList: ''
         };
 
         // =====================================================================
         // ROUTER
         // =====================================================================
         function parseHash() {
-            const hash = window.location.hash || '#/';
+            let hash = window.location.hash || '#/';
+            let query = {};
+            const qIndex = hash.indexOf('?');
+            if (qIndex !== -1) {
+                const qStr = hash.substring(qIndex + 1);
+                hash = hash.substring(0, qIndex);
+                qStr.split('&').forEach(part => {
+                    const [k, v] = part.split('=');
+                    if (k) query[decodeURIComponent(k)] = decodeURIComponent(v || '');
+                });
+            }
+
             if (hash === '#/' || hash === '#') {
-                return { view: 'list' };
+                return { view: 'list', query };
             }
             const patchMatch = hash.match(/^#\/patchset\/(.+)$/);
             if (patchMatch) {
-                return { view: 'patchset', id: decodeURIComponent(patchMatch[1]) };
+                return { view: 'patchset', id: decodeURIComponent(patchMatch[1]), query };
             }
             const msgMatch = hash.match(/^#\/message\/(.+)$/);
             if (msgMatch) {
-                return { view: 'message', id: decodeURIComponent(msgMatch[1]) };
+                return { view: 'message', id: decodeURIComponent(msgMatch[1]), query };
             }
             const logMatch = hash.match(/^#\/log\/(\d+)$/);
             if (logMatch) {
-                return { view: 'log', id: logMatch[1] };
+                return { view: 'log', id: logMatch[1], query };
             }
             if (hash === '#/stats') {
-                return { view: 'stats' };
+                return { view: 'stats', query };
             }
-            return { view: 'list' };
+            return { view: 'list', query };
         }
 
         function navigate(hash) {
@@ -715,10 +728,20 @@
             state.view = route.view;
             state.selectedIndex = -1;
 
+            // Handle list param
+            if (route.query && typeof route.query.list !== 'undefined') {
+                 state.selectedList = route.query.list;
+            }
+
             const app = document.getElementById('app');
             app.innerHTML = '<div class="loading">Loading...</div>';
 
             try {
+                // Ensure lists are loaded
+                if (state.mailingLists.length === 0) {
+                    await fetchMailingLists();
+                }
+
                 switch (route.view) {
                     case 'list':
                         await renderListView();
@@ -744,6 +767,20 @@
         }
 
         window.addEventListener('hashchange', router);
+
+        // =====================================================================
+        // DATA FETCHING
+        // =====================================================================
+        async function fetchMailingLists() {
+            try {
+                const res = await fetch('/api/lists');
+                if (res.ok) {
+                    state.mailingLists = await res.json();
+                }
+            } catch (e) {
+                console.error("Failed to fetch mailing lists", e);
+            }
+        }
 
         // =====================================================================
         // UTILITIES
@@ -950,11 +987,46 @@
             });
         }
 
+        function updateUrlWithList() {
+            let url = new URL(window.location.href);
+            let hash = url.hash;
+            let queryPart = '';
+            
+            const qIndex = hash.indexOf('?');
+            if (qIndex !== -1) {
+                hash = hash.substring(0, qIndex);
+            }
+            
+            // Rebuild query
+            const params = new URLSearchParams();
+            if (state.selectedList) {
+                params.set('list', state.selectedList);
+            }
+            
+            if (params.toString()) {
+                queryPart = '?' + params.toString();
+            }
+            
+            // Update without reload
+            window.history.replaceState(null, null, hash + queryPart);
+        }
+
+        function setMailingList(list) {
+            state.selectedList = list;
+            state.currentPage = 1;
+            updateUrlWithList();
+            fetchListData();
+        }
+
         // =====================================================================
         // LIST VIEW
         // =====================================================================
         async function renderListView() {
             const app = document.getElementById('app');
+
+            const listOptions = state.mailingLists.map(l => 
+                `<option value="${escapeHtml(l)}" ${state.selectedList === l ? 'selected' : ''}>${escapeHtml(l)}</option>`
+            ).join('');
 
             app.innerHTML = `
                 <h1>
@@ -965,6 +1037,12 @@
                 </h1>
                 <div class="controls">
                     <input type="text" id="searchInput" placeholder="Search (subject, author:, date:)" value="${escapeHtml(state.searchQuery)}">
+                    
+                    <select id="listSelector" onchange="setMailingList(this.value)" style="padding: 4px 8px; border: 1px solid var(--border); border-radius: 3px;">
+                        <option value="">All Lists</option>
+                        ${listOptions}
+                    </select>
+
                     <button onclick="triggerSearch()">Search</button>
                     <button onclick="clearSearch()">Clear</button>
                     <div style="flex:1"></div>
@@ -1004,6 +1082,9 @@
             let url = `${endpoint}?page=${state.currentPage}&per_page=${state.perPage}`;
             if (state.searchQuery) {
                 url += `&q=${encodeURIComponent(state.searchQuery)}`;
+            }
+            if (state.selectedList) {
+                url += `&mailing_list=${encodeURIComponent(state.selectedList)}`;
             }
 
             const res = await fetch(url);

@@ -371,9 +371,71 @@ impl Database {
         let _ = self
             .try_create_index("idx_tool_usages_review", "tool_usages", "review_id")
             .await;
+        
+        // Manual migration for messages_mailing_lists
+        let _ = self
+            .conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS messages_mailing_lists (
+                    message_id INTEGER NOT NULL,
+                    mailing_list_id INTEGER NOT NULL,
+                    PRIMARY KEY (message_id, mailing_list_id),
+                    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                    FOREIGN KEY(mailing_list_id) REFERENCES mailing_lists(id) ON DELETE CASCADE
+                )",
+                (),
+            )
+            .await;
+            
+        // Backfill messages_mailing_lists from messages.mailing_list
+        let _ = self
+            .conn
+            .execute(
+                "INSERT OR IGNORE INTO messages_mailing_lists (message_id, mailing_list_id)
+                 SELECT m.id, ml.id
+                 FROM messages m
+                 JOIN mailing_lists ml ON m.mailing_list = ml.nntp_group
+                 WHERE m.mailing_list IS NOT NULL",
+                (),
+            )
+            .await;
 
         let _ = self.migrate_tool_usages().await;
         Ok(())
+    }
+
+    pub async fn get_mailing_list_id_by_name(&self, name: &str) -> Result<Option<i64>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id FROM mailing_lists WHERE nntp_group = ?",
+                libsql::params![name],
+            )
+            .await?;
+        if let Ok(Some(row)) = rows.next().await {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn add_message_to_mailing_list(&self, message_id: i64, mailing_list_id: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO messages_mailing_lists (message_id, mailing_list_id) VALUES (?, ?)",
+                libsql::params![message_id, mailing_list_id],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_mailing_lists(&self) -> Result<Vec<String>> {
+        let mut rows = self.conn.query("SELECT nntp_group FROM mailing_lists", ()).await?;
+        let mut lists = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            lists.push(row.get(0)?);
+        }
+        Ok(lists)
     }
 
     pub async fn create_review(
@@ -1919,12 +1981,30 @@ impl Database {
         }
     }
 
-    fn build_search(&self, query: Option<String>, target: &str) -> (String, Vec<String>) {
+    fn build_search(
+        &self,
+        query: Option<String>,
+        mailing_list: Option<String>,
+        target: &str,
+    ) -> (String, Vec<String>) {
         let mut conditions = Vec::new();
         let mut params = Vec::new();
 
         // Always exclude placeholders
         conditions.push("subject != '(placeholder)'".to_string());
+
+        if let Some(list) = mailing_list {
+            if !list.is_empty() {
+                if target == "patchset" {
+                    // Filter patchsets where any patch is in the mailing list
+                    conditions.push("id IN (SELECT patchset_id FROM patches p JOIN messages m ON p.message_id = m.message_id JOIN messages_mailing_lists mml ON m.id = mml.message_id JOIN mailing_lists ml ON mml.mailing_list_id = ml.id WHERE ml.nntp_group = ?)".to_string());
+                } else {
+                    // Filter messages
+                    conditions.push("id IN (SELECT message_id FROM messages_mailing_lists mml JOIN mailing_lists ml ON mml.mailing_list_id = ml.id WHERE ml.nntp_group = ?)".to_string());
+                }
+                params.push(list);
+            }
+        }
 
         if let Some(q) = query {
             let q = q.trim();
@@ -1966,8 +2046,9 @@ impl Database {
         limit: usize,
         offset: usize,
         query: Option<String>,
+        mailing_list: Option<String>,
     ) -> Result<Vec<PatchsetRow>> {
-        let (where_clause, params) = self.build_search(query, "patchset");
+        let (where_clause, params) = self.build_search(query, mailing_list, "patchset");
         // We use p.* alias implicitely by using unqualified names in WHERE which is fine given no collisions.
         // But for clarity/safety we should alias in FROM.
         // build_search returns "WHERE author ...".
@@ -2052,8 +2133,9 @@ impl Database {
         limit: usize,
         offset: usize,
         query: Option<String>,
+        mailing_list: Option<String>,
     ) -> Result<Vec<MessageRow>> {
-        let (where_clause, params) = self.build_search(query, "message");
+        let (where_clause, params) = self.build_search(query, mailing_list, "message");
         let sql = format!(
             "SELECT id, message_id, thread_id, in_reply_to, author, subject, date, body, to_recipients, cc_recipients, git_blob_hash, mailing_list FROM messages {} ORDER BY date DESC LIMIT ? OFFSET ?",
             where_clause
@@ -2088,8 +2170,8 @@ impl Database {
         Ok(messages)
     }
 
-    pub async fn count_patchsets(&self, query: Option<String>) -> Result<usize> {
-        let (where_clause, params) = self.build_search(query, "patchset");
+    pub async fn count_patchsets(&self, query: Option<String>, mailing_list: Option<String>) -> Result<usize> {
+        let (where_clause, params) = self.build_search(query, mailing_list, "patchset");
         let sql = format!("SELECT COUNT(*) FROM patchsets {}", where_clause);
 
         let mut args = Vec::new();
@@ -2106,8 +2188,8 @@ impl Database {
         }
     }
 
-    pub async fn count_messages(&self, query: Option<String>) -> Result<usize> {
-        let (where_clause, params) = self.build_search(query, "message");
+    pub async fn count_messages(&self, query: Option<String>, mailing_list: Option<String>) -> Result<usize> {
+        let (where_clause, params) = self.build_search(query, mailing_list, "message");
         let sql = format!("SELECT COUNT(*) FROM messages {}", where_clause);
 
         let mut args = Vec::new();
@@ -2629,7 +2711,7 @@ mod tests {
             .unwrap();
         assert_eq!(ps1, ps1_update);
 
-        let list = db.get_patchsets(1, 0, None).await.unwrap();
+        let list = db.get_patchsets(1, 0, None, None).await.unwrap();
         assert_eq!(list[0].subject.as_deref(), Some("Cover Letter"));
 
         // 3. Add Patch 2 (index 2)
@@ -2658,7 +2740,7 @@ mod tests {
         .await
         .unwrap();
 
-        let list = db.get_patchsets(1, 0, None).await.unwrap();
+        let list = db.get_patchsets(1, 0, None, None).await.unwrap();
         assert_eq!(list[0].subject.as_deref(), Some("Cover Letter"));
 
         // 4. Create NEW patchset in same thread (Author B, Time 1000 - same time but diff author)
@@ -2903,7 +2985,7 @@ mod tests {
         }
 
         // Verify the final subject is the cover letter (index 0)
-        let list = db.get_patchsets(1, 0, None).await.unwrap();
+        let list = db.get_patchsets(1, 0, None, None).await.unwrap();
         assert_eq!(
             list[0].subject.as_deref(),
             Some("[PATCH 0/5] Feature part 0")
@@ -2944,7 +3026,7 @@ mod tests {
             .unwrap();
 
         // Check initial status
-        let list = db.get_patchsets(1, 0, None).await.unwrap();
+        let list = db.get_patchsets(1, 0, None, None).await.unwrap();
         assert_eq!(list[0].status.as_deref(), Some("Incomplete"));
 
         // 2. Add Patch 1. received=1. Total=2. Status should be Incomplete.
@@ -2954,7 +3036,7 @@ mod tests {
         .await
         .unwrap();
         db.create_patch(ps_id, "msg_1", 1, "diff").await.unwrap();
-        let list = db.get_patchsets(1, 0, None).await.unwrap();
+        let list = db.get_patchsets(1, 0, None, None).await.unwrap();
         assert_eq!(list[0].status.as_deref(), Some("Incomplete"));
 
         // 3. Add Patch 2. received=2. Total=2. Status should transition to Pending.
@@ -2964,7 +3046,7 @@ mod tests {
         .await
         .unwrap();
         db.create_patch(ps_id, "msg_2", 2, "diff").await.unwrap();
-        let list = db.get_patchsets(1, 0, None).await.unwrap();
+        let list = db.get_patchsets(1, 0, None, None).await.unwrap();
         assert_eq!(list[0].status.as_deref(), Some("Pending"));
     }
 

@@ -235,6 +235,14 @@ CREATE TABLE IF NOT EXISTS messages_recipients (
     FOREIGN KEY(person_id) REFERENCES people(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS messages_mailing_lists (
+    message_id INTEGER NOT NULL,
+    mailing_list_id INTEGER NOT NULL,
+    PRIMARY KEY (message_id, mailing_list_id),
+    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY(mailing_list_id) REFERENCES mailing_lists(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS tool_usages (
     id INTEGER PRIMARY KEY,
     review_id INTEGER NOT NULL,

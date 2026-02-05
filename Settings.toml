@@ -11,7 +11,7 @@ groups = ["org.kernel.vger.linux-kernel"]
 
 [ai]
 provider = "gemini"
-model = "gemini-3-pro-preview"
+model = "gemini-3-flash-preview"
 max_input_tokens = 200000
 max_interactions = 100
 temperature = 1.0
@@ -19,7 +19,7 @@ explicit_prompts_caching = true
 
 [server]
 host = "127.0.0.1"
-port = 8080
+port = 8081
 
 [git]
 repository_path = "third_party/linux"

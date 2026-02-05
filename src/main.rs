@@ -30,9 +30,9 @@ struct Cli {
     #[arg(long)]
     download: Option<usize>,
 
-    /// Enable NNTP ingestor (disabled by default)
+    /// Enable tracking of configured mailing lists (replaces --nntp)
     #[arg(long)]
-    nntp: bool,
+    track: bool,
 
     /// Enable REST API for manual injection (disabled by default)
     #[arg(long)]
@@ -359,7 +359,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.clone(),
         raw_tx.clone(),
         cli.download,
-        cli.nntp,
+        cli.track,
         cli.message,
         cli.thread,
         cli.git,
@@ -573,6 +573,13 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) ->
         .get_message_id_by_msg_id(&metadata.message_id)
         .await
     {
+        // Link to Mailing List
+        if let Ok(Some(list_id)) = worker_db.get_mailing_list_id_by_name(&group).await {
+            if let Err(e) = worker_db.add_message_to_mailing_list(msg_id_db, list_id).await {
+                error!("Failed to link message to mailing list: {}", e);
+            }
+        }
+
         // Link Subsystems
         for &sid in &subsystem_ids {
             if let Err(e) = worker_db.add_subsystem_to_message(msg_id_db, sid).await {
@@ -821,16 +828,16 @@ mod tests {
 
     #[test]
     fn test_cli_parsing() {
-        let args = vec!["sashiko", "--download", "100", "--nntp", "--api"];
+        let args = vec!["sashiko", "--download", "100", "--track", "--api"];
         let cli = Cli::parse_from(args);
         assert_eq!(cli.download, Some(100));
-        assert!(cli.nntp);
+        assert!(cli.track);
         assert!(cli.api);
 
         let args = vec!["sashiko"];
         let cli = Cli::parse_from(args);
         assert_eq!(cli.download, None);
-        assert!(!cli.nntp);
+        assert!(!cli.track);
         assert!(!cli.api);
     }
 

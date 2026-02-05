@@ -41,6 +41,7 @@ pub struct Pagination {
     pub page: Option<usize>,
     pub per_page: Option<usize>,
     pub q: Option<String>,
+    pub mailing_list: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -135,6 +136,7 @@ pub async fn run_server(
     });
 
     let app = Router::new()
+        .route("/api/lists", get(list_mailing_lists))
         .route("/api/patchsets", get(list_patchsets))
         .route("/api/messages", get(list_messages))
         .route("/api/patch", get(get_patchset))
@@ -327,6 +329,16 @@ async fn submit_patch(
     }
 }
 
+async fn list_mailing_lists(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<String>>, StatusCode> {
+    let lists = state.db.get_mailing_lists().await.map_err(|e| {
+        error!("Failed to get mailing lists: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(lists))
+}
+
 async fn list_patchsets(
     State(state): State<Arc<AppState>>,
     Query(pagination): Query<Pagination>,
@@ -337,12 +349,12 @@ async fn list_patchsets(
 
     let items = state
         .db
-        .get_patchsets(per_page, offset, pagination.q.clone())
+        .get_patchsets(per_page, offset, pagination.q.clone(), pagination.mailing_list.clone())
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let total = state
         .db
-        .count_patchsets(pagination.q.clone())
+        .count_patchsets(pagination.q.clone(), pagination.mailing_list.clone())
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -364,12 +376,12 @@ async fn list_messages(
 
     let items = state
         .db
-        .get_messages(per_page, offset, pagination.q.clone())
+        .get_messages(per_page, offset, pagination.q.clone(), pagination.mailing_list.clone())
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let total = state
         .db
-        .count_messages(pagination.q.clone())
+        .count_messages(pagination.q.clone(), pagination.mailing_list.clone())
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -498,8 +510,8 @@ async fn get_message(
 }
 
 async fn get_stats(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let messages = state.db.count_messages(None).await.unwrap_or(0);
-    let patchsets = state.db.count_patchsets(None).await.unwrap_or(0);
+    let messages = state.db.count_messages(None, None).await.unwrap_or(0);
+    let patchsets = state.db.count_patchsets(None, None).await.unwrap_or(0);
     let counts = state
         .db
         .get_patchset_counts_by_status()
