@@ -331,12 +331,20 @@ async fn submit_patch(
 
 async fn list_mailing_lists(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<String>>, StatusCode> {
+) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
     let lists = state.db.get_mailing_lists().await.map_err(|e| {
         error!("Failed to get mailing lists: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    Ok(Json(lists))
+    
+    let result = lists.into_iter().map(|(name, group)| {
+        serde_json::json!({
+            "name": name,
+            "group": group
+        })
+    }).collect();
+
+    Ok(Json(result))
 }
 
 async fn list_patchsets(

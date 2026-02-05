@@ -1025,7 +1025,7 @@
             const app = document.getElementById('app');
 
             const listOptions = state.mailingLists.map(l => 
-                `<option value="${escapeHtml(l)}" ${state.selectedList === l ? 'selected' : ''}>${escapeHtml(l)}</option>`
+                `<option value="${escapeHtml(l.group)}" ${state.selectedList === l.group ? 'selected' : ''}>${escapeHtml(l.name)}</option>`
             ).join('');
 
             app.innerHTML = `

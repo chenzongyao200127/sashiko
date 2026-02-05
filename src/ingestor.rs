@@ -64,16 +64,16 @@ impl Ingestor {
         }
     }
 
-    fn get_tracked_groups(&self) -> Vec<String> {
+    fn get_tracked_groups(&self) -> Vec<(String, String)> {
         self.settings
             .mailing_lists
             .track
             .iter()
             .map(|name| {
                 if name.contains('.') {
-                    name.clone()
+                    (name.clone(), name.clone())
                 } else {
-                    format!("org.kernel.vger.{}", name)
+                    (name.clone(), format!("org.kernel.vger.{}", name))
                 }
             })
             .collect()
@@ -433,10 +433,10 @@ impl Ingestor {
     async fn run_git_bootstrap(&self, limit: usize) -> Result<()> {
         let mut remaining = limit;
 
-        for group in self.get_tracked_groups() {
+        for (name, group) in self.get_tracked_groups() {
             // Ensure the mailing list exists in the DB so messages can be linked to it
             // We use &group because ensure_mailing_list expects &str
-            if let Err(e) = self.db.ensure_mailing_list(&group, &group).await {
+            if let Err(e) = self.db.ensure_mailing_list(&name, &group).await {
                 error!("Failed to ensure mailing list {} exists: {}", group, e);
                 // Continue anyway, maybe it exists? Or we just fail linking.
             }
@@ -656,9 +656,9 @@ impl Ingestor {
         let mut client =
             NntpClient::connect(&self.settings.nntp.server, self.settings.nntp.port).await?;
 
-        for group_name in self.get_tracked_groups() {
+        for (name, group_name) in self.get_tracked_groups() {
             let group_name = &group_name;
-            self.db.ensure_mailing_list(group_name, group_name).await?;
+            self.db.ensure_mailing_list(&name, group_name).await?;
 
             let info = client.group(group_name).await?;
             let last_known = self.db.get_last_article_num(group_name).await?;

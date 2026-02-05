@@ -429,11 +429,11 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_mailing_lists(&self) -> Result<Vec<String>> {
-        let mut rows = self.conn.query("SELECT nntp_group FROM mailing_lists", ()).await?;
+    pub async fn get_mailing_lists(&self) -> Result<Vec<(String, String)>> {
+        let mut rows = self.conn.query("SELECT name, nntp_group FROM mailing_lists", ()).await?;
         let mut lists = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
-            lists.push(row.get(0)?);
+            lists.push((row.get(0)?, row.get(1)?));
         }
         Ok(lists)
     }
@@ -1283,7 +1283,8 @@ impl Database {
     pub async fn ensure_mailing_list(&self, name: &str, group: &str) -> Result<()> {
         self.conn
             .execute(
-                "INSERT OR IGNORE INTO mailing_lists (name, nntp_group, last_article_num) VALUES (?, ?, 0)",
+                "INSERT INTO mailing_lists (name, nntp_group, last_article_num) VALUES (?, ?, 0)
+                 ON CONFLICT(nntp_group) DO UPDATE SET name = excluded.name",
                 libsql::params![name, group],
             )
             .await?;
