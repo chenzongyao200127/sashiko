@@ -804,6 +804,7 @@
                 const lines = escaped.split('\n');
                 const hasQuotes = lines.some(l => l.trimStart().startsWith('&gt;')); // Escaped >
                 let inDiffBlock = false;
+                let currentBlockIsQuoted = false;
                 let seenDiffOrQuote = false;
                 
                 // Pass 1: Classify
@@ -837,15 +838,21 @@
                     if (isHeader || isExtendedHeader) {
                         isDefiniteDiff = true;
                         inDiffBlock = true;
+                        currentBlockIsQuoted = isQuoted;
                     } else if (hasQuotes) {
                         if (isQuoted) {
                             isDefiniteDiff = true;
                         } else {
                             if (isMeta) isDefiniteDiff = true;
                             else if (inDiffBlock) {
-                                if (content.startsWith('+') && !content.startsWith('+++')) isDefiniteDiff = true;
-                                else if (content.startsWith('-') && !content.startsWith('---') && content.trim() !== '--') isDefiniteDiff = true;
-                                else if (content.startsWith(' ') || content.startsWith('\\') || content.startsWith('\t')) isDefiniteDiff = true;
+                                if (currentBlockIsQuoted) {
+                                    // Breaking out of a quoted block
+                                    inDiffBlock = false;
+                                } else {
+                                    if (content.startsWith('+') && !content.startsWith('+++')) isDefiniteDiff = true;
+                                    else if (content.startsWith('-') && !content.startsWith('---') && content.trim() !== '--') isDefiniteDiff = true;
+                                    else if (content.startsWith(' ') || content.startsWith('\\') || content.startsWith('\t')) isDefiniteDiff = true;
+                                }
                             }
                         }
                     } else {
