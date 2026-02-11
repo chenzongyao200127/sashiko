@@ -156,7 +156,7 @@ impl ToolBox {
                 }),
             },
             FunctionDeclaration {
-                name: "todowrite".to_string(),
+                name: "TodoWrite".to_string(),
                 description: "Add a new TODO item to the TODO.md file.".to_string(),
                 parameters: json!({
                     "type": "object",
