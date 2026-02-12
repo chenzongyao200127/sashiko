@@ -420,25 +420,38 @@ impl Worker {
                             .count();
 
                         if same_call_count > 0 {
-                            // For tools, allow some repetition but prevent infinite loops (e.g. > 5 times)
-                            if same_call_count >= 5 {
+                            // For tools, allow some repetition but prevent infinite loops.
+                            // Soft limit: returning error to model to let it self-correct
+                            if same_call_count >= 2 {
                                 let error_msg = format!(
-                                    "Loop detected: Tool '{}' called with same arguments {} times. Terminating.",
+                                    "Error: Loop detected. You have already called tool '{}' with these exact arguments {} times. Please stop repeating yourself and proceed to the next step.",
                                     call.name,
                                     same_call_count + 1
                                 );
                                 warn!("{}", error_msg);
-                                return Ok(WorkerResult {
-                                    output: None,
-                                    error: Some(error_msg),
-                                    input_context: input_context.clone(),
-                                    history: self.history.clone(),
-                                    history_before_pruning: final_history_before_pruning,
-                                    history_after_pruning: final_history_after_pruning,
-                                    tokens_in: total_tokens_in,
-                                    tokens_out: total_tokens_out,
-                                    tokens_cached: total_tokens_cached,
+                                
+                                // Hard limit: terminate to save resources
+                                if same_call_count >= 10 {
+                                     return Ok(WorkerResult {
+                                        output: None,
+                                        error: Some(format!("Terminating due to persistent tool loop: {}", error_msg)),
+                                        input_context: input_context.clone(),
+                                        history: self.history.clone(),
+                                        history_before_pruning: final_history_before_pruning,
+                                        history_after_pruning: final_history_after_pruning,
+                                        tokens_in: total_tokens_in,
+                                        tokens_out: total_tokens_out,
+                                        tokens_cached: total_tokens_cached,
+                                    });
+                                }
+
+                                function_responses.push(Part::FunctionResponse {
+                                    function_response: FunctionResponse {
+                                        name: call.name.clone(),
+                                        response: json!({ "error": error_msg }),
+                                    },
                                 });
+                                continue;
                             }
                         }
 
