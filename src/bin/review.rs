@@ -379,16 +379,11 @@ async fn main() -> Result<()> {
                             Ok(result) => {
                                 info!("AI review completed (or stopped).");
 
-                                // Extract review_inline from JSON and write to disk
+                                // Extract review_inline from JSON
                                 let mut inline_content = None;
                                 if let Some(output) = &result.output {
                                     if let Some(content) = output.get("review_inline").and_then(|v| v.as_str()) {
-                                        let inline_path = worktree.path.join("review-inline.txt");
-                                        if let Err(e) = std::fs::write(&inline_path, content) {
-                                            error!("Failed to write review-inline.txt: {}", e);
-                                        } else {
-                                            inline_content = Some(content.to_string());
-                                        }
+                                        inline_content = Some(content.to_string());
                                     }
                                 }
 
