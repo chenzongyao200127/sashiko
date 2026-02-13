@@ -58,7 +58,7 @@ impl PromptRegistry {
         if subsystem_dir.exists() {
             // New Structure (e.g. Kernel)
             self.append_directory(&mut content, &subsystem_dir, |name| {
-                !matches!(name, "README.md")
+                !matches!(name, "README.md" | "subsystem-template.md")
             })
             .await?;
 
@@ -343,4 +343,25 @@ mod tests {
         assert!(core_idx < template_idx);
         assert!(template_idx < patterns_idx);
     }
+
+    #[tokio::test]
+    async fn test_build_context_excludes_subsystem_template() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let subsystem_dir = temp_dir.path().join("subsystem");
+        std::fs::create_dir(&subsystem_dir).unwrap();
+
+        std::fs::write(subsystem_dir.join("real.md"), "Real Content").unwrap();
+        std::fs::write(
+            subsystem_dir.join("subsystem-template.md"),
+            "Template Content",
+        )
+        .unwrap();
+
+        let registry = PromptRegistry::new(temp_dir.path().to_path_buf());
+        let context = registry.build_context().await.unwrap();
+
+        assert!(context.contains("Real Content"));
+        assert!(!context.contains("Template Content"));
+    }
 }
+
