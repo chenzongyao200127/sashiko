@@ -19,6 +19,22 @@ Sashiko is based on the set of carefully crafted prompts to guide the AI in its 
 
 *   [**review-prompts**](https://github.com/masoncl/review-prompts)
 
+## Important Disclaimers
+
+Before using Sashiko, please be aware of the following:
+
+### 1. Data Privacy and Code Sharing
+Sashiko operates by sending patch data and potentially extensive portions of the Linux kernel git history to your configured Large Language Model (LLM) provider.
+*   **What is shared:** This may include not just the patch being reviewed, but also related commits, file contents, and other context from the configured kernel repository to provide the LLM with sufficient context.
+*   **Your responsibility:** You must ensure you are authorized and comfortable sharing this code and data with the third-party LLM provider.
+*   **Liability:** The authors of Sashiko assume no responsibility for any consequences regarding data privacy, confidentiality, or intellectual property rights resulting from the transmission of this data.
+
+### 2. Operational Costs
+Running an automated review system like Sashiko can be computationally expensive and may incur significant API costs.
+*   **Cost factors:** The total cost depends heavily on the volume of patches reviewed, the complexity of individual patches, and the pricing model of your chosen LLM provider and specific model.
+*   **Monitoring:** It is the user's sole responsibility to monitor token usage and billing. While Sashiko may provide usage estimates, these are approximations and should not be relied upon for billing purposes.
+*   **Liability:** The authors of Sashiko are not responsible for any financial costs, fees, or unexpected charges incurred by the use of this software.
+
 ## Prerequisites
 
 - **Rust**: Version 1.86 or later.
