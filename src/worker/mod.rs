@@ -59,9 +59,51 @@ fn validate_inline_format(content: &str) -> Result<(), String> {
         return Err("The `review_inline` field contains Markdown headers (lines starting with '#'). It must be plain text as per `inline-template.md`.".to_string());
     }
 
+    // Check for markdown code blocks (lines starting with '```')
+    if content.lines().any(|l| l.trim_start().starts_with("```")) {
+        return Err("The `review_inline` field contains Markdown code blocks ('```'). It must be plain text as per `inline-template.md`.".to_string());
+    }
+
     // Check for quoting (lines starting with '>')
     if !content.lines().any(|l| l.trim_start().starts_with(">")) {
         return Err("The `review_inline` field does not appear to quote any code or context using '>'. Please follow the quoting style in `inline-template.md`.".to_string());
+    }
+
+    // Check for Commit Header (must appear in the first few lines)
+    // We look for "commit " at the start of a line.
+    let has_commit_header = content
+        .lines()
+        .take(20) // Check first 20 lines to be safe (in case of long preamble)
+        .any(|l| l.trim_start().to_lowercase().starts_with("commit "));
+
+    if !has_commit_header {
+        return Err("The `review_inline` field is missing the 'commit <hash>' header. Please start with the commit details (Commit, Author, Subject) as per `inline-template.md`.".to_string());
+    }
+
+    // Check for comments (lines that are NOT quoted and NOT headers)
+    // We want to ensure the AI actually wrote some feedback, not just pasted the diff.
+    let has_comments = content.lines().any(|l| {
+        let trimmed = l.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        if trimmed.starts_with(">") {
+            return false;
+        }
+        // Ignore standard headers
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("commit ")
+            || lower.starts_with("author:")
+            || lower.starts_with("date:")
+            || lower.starts_with("link:")
+        {
+            return false;
+        }
+        true
+    });
+
+    if !has_comments {
+        return Err("The `review_inline` field appears to lack any comments or summary. You must include a summary and interspersed comments explaining the findings.".to_string());
     }
 
     Ok(())
@@ -549,7 +591,7 @@ mod tests {
     #[test]
     fn test_validate_inline_format_valid() {
         let content =
-            "Commit 123\n\n> diff --git a/file b/file\n> index 123..456\n\nThis looks bad.";
+            "commit 1234567890abcdef\nAuthor: Jane Doe\n\nSummary of changes.\n\n> diff --git a/file b/file\n> index 123..456\n\nThis looks bad.";
         assert!(validate_inline_format(content).is_ok());
     }
 
@@ -560,14 +602,32 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_inline_format_markdown_code_blocks() {
+        let content = "commit 123\n\n```\n> diff --git ...\n```\n\nComment";
+        assert!(validate_inline_format(content).is_err());
+    }
+
+    #[test]
     fn test_validate_inline_format_no_quoting() {
-        let content = "This looks bad.\nNo diff here.";
+        let content = "commit 123\n\nThis looks bad.\nNo diff here.";
+        assert!(validate_inline_format(content).is_err());
+    }
+
+    #[test]
+    fn test_validate_inline_format_missing_commit_header() {
+        let content = "> diff --git a/file b/file\n> index 123..456\n\nThis looks bad.";
+        assert!(validate_inline_format(content).is_err());
+    }
+
+    #[test]
+    fn test_validate_inline_format_no_comments() {
+        let content = "commit 123\nAuthor: Me\n\n> diff --git a/file b/file\n> + code";
         assert!(validate_inline_format(content).is_err());
     }
 
     #[test]
     fn test_validate_inline_format_headers_in_diff_ok() {
-        let content = "> #include <stdio.h>\n> void main() {}";
+        let content = "commit 123\n\n> #include <stdio.h>\n> void main() {}\n\nComment";
         assert!(validate_inline_format(content).is_ok());
     }
 }
