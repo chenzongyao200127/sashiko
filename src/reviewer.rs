@@ -518,7 +518,7 @@ impl Reviewer {
             let mut application_failed = false;
             let mut apply_logs = String::new();
 
-            for (patch_id, index, diff, subject, author, date_ts, msg_id) in diffs {
+            for (i, (patch_id, index, diff, subject, author, date_ts, msg_id)) in diffs.iter().enumerate() {
                 let date_str = std::process::Command::new("date")
                     .arg("-R")
                     .arg("-d")
@@ -538,12 +538,31 @@ impl Reviewer {
 
                 // Optimization: If message_id is a valid SHA, just checkout it
                 if msg_id.len() == 40 && msg_id.chars().all(|c| c.is_ascii_hexdigit()) {
-                    match worktree.reset_hard(msg_id).await {
-                        Ok(_) => applied = true,
-                        Err(e) => {
-                            let msg = format!("Failed to reset hard to {}: {}\n", msg_id, e);
-                            info!("{}", msg);
-                            apply_logs.push_str(&msg);
+                    let next_is_sha = diffs
+                        .get(i + 1)
+                        .map(|(_, _, _, _, _, _, next_msg)| {
+                            next_msg.len() == 40 && next_msg.chars().all(|c| c.is_ascii_hexdigit())
+                        })
+                        .unwrap_or(true); // If there is no next item, we treat it as "safe to skip reset" (we are done)
+
+                    if next_is_sha {
+                        // Fast path: verify existence only, skip checkout
+                        match get_commit_hash(&worktree.path, msg_id).await {
+                            Ok(_) => applied = true,
+                            Err(e) => {
+                                let msg = format!("Commit {} missing: {}\n", msg_id, e);
+                                info!("{}", msg);
+                                apply_logs.push_str(&msg);
+                            }
+                        }
+                    } else {
+                        match worktree.reset_hard(msg_id).await {
+                            Ok(_) => applied = true,
+                            Err(e) => {
+                                let msg = format!("Failed to reset hard to {}: {}\n", msg_id, e);
+                                info!("{}", msg);
+                                apply_logs.push_str(&msg);
+                            }
                         }
                     }
                 }
