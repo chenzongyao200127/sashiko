@@ -1451,8 +1451,8 @@
 
             if (!reviewsHtml) reviewsHtml = '<p>No AI reviews yet.</p>';
 
-            // Only show baseline/thread section if NOT a direct git submission (heuristic: message_id is SHA)
-            const isGitSubmission = data.message_id && /^[0-9a-f]{40}$/.test(data.message_id);
+            // Only show baseline/thread section if NOT a direct git submission (heuristic: message_id is SHA or synthetic local ID or subject indicates git import)
+            const isGitSubmission = (data.message_id && (/^[0-9a-f]{40}$/.test(data.message_id) || data.message_id.includes('@sashiko.local'))) || (data.subject && data.subject.startsWith('Git Import:'));
 
             const threadHtml = isGitSubmission ? '' : renderThreadTree(data.thread);
             const subsystemsHtml = data.subsystems?.length > 0
@@ -1786,8 +1786,8 @@
             document.title = `Sashiko - ${data.subject}`;
             const date = formatDate(data.date, true);
             
-            // Heuristic: message_id is SHA means it's a direct git submission
-            const isGitSubmission = data.message_id && /^[0-9a-f]{40}$/.test(data.message_id);
+            // Heuristic: message_id is SHA or synthetic local ID means it's a direct git submission
+            const isGitSubmission = data.message_id && (/^[0-9a-f]{40}$/.test(data.message_id) || data.message_id.includes('@sashiko.local'));
             const threadHtml = (!isGitSubmission && data.thread?.length > 0) ? renderThreadTreeWithCurrent(data.thread, data.message_id) : '';
 
             document.getElementById('app').innerHTML = `

@@ -226,13 +226,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } => {
                         let root_msg_id = format!("{}@sashiko.local", article_id);
 
+                        // For single patches, we don't want a synthetic parent (the patch is the root)
+                        let in_reply_to = if total == 1 {
+                            None
+                        } else {
+                            Some(root_msg_id.clone())
+                        };
+
                         // Pre-parsed patch handling
                         let metadata = sashiko::patch::PatchsetMetadata {
                             message_id: message_id.clone(),
                             subject,
                             author,
                             date: timestamp,
-                            in_reply_to: Some(root_msg_id.clone()),
+                            in_reply_to,
                             references: vec![root_msg_id.clone()],
                             index,
                             total,
@@ -553,7 +560,13 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) ->
             }
         } else if group == "git-fetch" || group == "api-submit" {
             // Group these by article_id (which is the range or single SHA/local_id)
-            let root_msg_id = format!("{}@sashiko.local", article_id);
+            // For singletons, the message itself is the root.
+            let root_msg_id = if metadata.total == 1 {
+                metadata.message_id.clone()
+            } else {
+                format!("{}@sashiko.local", article_id)
+            };
+
             match worker_db
                 .ensure_thread_for_message(&root_msg_id, metadata.date)
                 .await
@@ -695,7 +708,11 @@ async fn process_parsed_article(worker_db: &Database, article: ParsedArticle) ->
 
     let root_msg_id = format!("{}@sashiko.local", article_id);
     let cover_letter_id = if group == "git-fetch" || group == "api-submit" {
-        Some(root_msg_id.as_str())
+        if metadata.total == 1 {
+            Some(metadata.message_id.as_str())
+        } else {
+            Some(root_msg_id.as_str())
+        }
     } else if metadata.index == 0 || metadata.total == 1 {
         Some(metadata.message_id.as_str())
     } else {
