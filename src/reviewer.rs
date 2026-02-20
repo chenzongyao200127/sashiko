@@ -1387,7 +1387,8 @@ async fn run_review_tool(
                                                 "type": "ai_response",
                                                 "payload": AiResponse {
                                                     content: Some(name),
-                                                    tool_calls: None,
+                                                    thought: None,
+            tool_calls: None,
                                                     usage: None,
                                                 }
                                             }),
@@ -1408,7 +1409,8 @@ async fn run_review_tool(
                                             "type": "ai_response",
                                             "payload": AiResponse {
                                                 content: None,
-                                                tool_calls: None,
+                                                thought: None,
+            tool_calls: None,
                                                 usage: None,
                                             }
                                         }),
@@ -1576,7 +1578,8 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             Ok(AiResponse {
                 content: Some("Mocked AI response".to_string()),
-                tool_calls: None,
+                thought: None,
+            tool_calls: None,
                 usage: None,
             })
         }
@@ -1725,7 +1728,8 @@ echo '{"patchset_id": 1, "patches": [{"index": 1, "status": "applied"}]}'
                     assert_eq!(request.preloaded_context.as_deref(), Some("fresh-cache"));
                     Ok(AiResponse {
                         content: Some("Success after refresh".to_string()),
-                        tool_calls: None,
+                        thought: None,
+            tool_calls: None,
                         usage: None,
                     })
                 }
@@ -1851,7 +1855,8 @@ echo '{"patchset_id": 1, "patches": []}'
                 }
                 Ok(AiResponse {
                     content: Some("Ok".to_string()),
-                    tool_calls: None,
+                    thought: None,
+            tool_calls: None,
                     usage: None,
                 })
             }

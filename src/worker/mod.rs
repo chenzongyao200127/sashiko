@@ -337,6 +337,7 @@ impl Worker {
         let system_message = AiMessage {
             role: AiRole::System,
             content: Some(system_prompt),
+            thought: None,
             tool_calls: None,
             tool_call_id: None,
         };
@@ -344,6 +345,7 @@ impl Worker {
         let initial_message = AiMessage {
             role: AiRole::User,
             content: Some(full_user_message),
+            thought: None,
             tool_calls: None,
             tool_call_id: None,
         };
@@ -429,6 +431,7 @@ impl Worker {
             let assistant_message = AiMessage {
                 role: AiRole::Assistant,
                 content: resp.content.clone(),
+                thought: resp.thought.clone(),
                 tool_calls: resp.tool_calls.clone(),
                 tool_call_id: None,
             };
@@ -476,7 +479,8 @@ impl Worker {
                         tool_responses.push(AiMessage {
                             role: AiRole::Tool,
                             content: Some(json!({ "error": error_msg }).to_string()),
-                            tool_calls: None,
+                            thought: None,
+            tool_calls: None,
                             tool_call_id: Some(call.id.clone()),
                         });
                         continue;
@@ -497,26 +501,16 @@ impl Worker {
                     tool_responses.push(AiMessage {
                         role: AiRole::Tool,
                         content: Some(result),
-                        tool_calls: None,
+                        thought: None,
+            tool_calls: None,
                         tool_call_id: Some(call.id.clone()),
                     });
                 }
                 self.history.extend(tool_responses);
                 // Continue loop to get model response to tool outputs
             } else if let Some(final_text) = resp.content {
-                // Strip <think>...</think> blocks if present
-                let mut stripped_text = final_text.trim().to_string();
-                while let Some(start) = stripped_text.find("<think>") {
-                    if let Some(end) = stripped_text[start..].find("</think>") {
-                        stripped_text.replace_range(start..start + end + 8, "");
-                    } else {
-                        // Unclosed <think>, just strip from start to end
-                        stripped_text.replace_range(start.., "");
-                    }
-                }
-                let clean_text = stripped_text.trim();
-
                 // Try to clean up markdown code blocks if present
+                let clean_text = final_text.trim();
                 let clean_text = if clean_text.starts_with("```json") {
                     clean_text
                         .strip_prefix("```json")
@@ -539,7 +533,7 @@ impl Worker {
                     Ok(v) => v,
                     Err(e) => {
                         // Fallback: scan for JSON objects
-                        let candidates = find_json_candidates(stripped_text.as_str());
+                        let candidates = find_json_candidates(final_text.as_str());
                         if let Some(v) = candidates.last() {
                             v.clone()
                         } else {
@@ -547,7 +541,7 @@ impl Worker {
                                 output: None,
                                 error: Some(format!(
                                     "Failed to parse JSON response: {}. Text: {}",
-                                    e, stripped_text
+                                    e, final_text
                                 )),
                                 input_context,
                                 history: self.history.clone(),
@@ -578,7 +572,8 @@ impl Worker {
                         self.history.push(AiMessage {
                             role: AiRole::User,
                             content: Some(error_msg),
-                            tool_calls: None,
+                            thought: None,
+            tool_calls: None,
                             tool_call_id: None,
                         });
                         continue;
@@ -594,7 +589,8 @@ impl Worker {
                         self.history.push(AiMessage {
                             role: AiRole::User,
                             content: Some(error_msg),
-                            tool_calls: None,
+                            thought: None,
+            tool_calls: None,
                             tool_call_id: None,
                         });
                         continue;

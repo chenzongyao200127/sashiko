@@ -114,7 +114,8 @@ impl CacheManager {
             messages: vec![AiMessage {
                 role: AiRole::User,
                 content: Some(context_str),
-                tool_calls: None,
+                thought: None,
+            tool_calls: None,
                 tool_call_id: None,
             }],
             tools: self.tools.clone(),

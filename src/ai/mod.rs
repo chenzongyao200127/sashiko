@@ -40,6 +40,9 @@ pub struct AiMessage {
     pub role: AiRole,
     /// The optional text content of the message.
     pub content: Option<String>,
+    /// Optional thoughts of the AI model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thought: Option<String>,
     /// Optional tool calls requested by the AI (usually only for Assistant role).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -115,6 +118,9 @@ pub struct AiRequest {
 pub struct AiResponse {
     /// Generated text content, if any.
     pub content: Option<String>,
+    /// Optional thought content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thought: Option<String>,
     /// Tool calls requested by the AI, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -222,6 +228,7 @@ mod tests {
             messages: vec![AiMessage {
                 role: AiRole::User,
                 content: Some("Hello".to_string()),
+                thought: None,
                 tool_calls: None,
                 tool_call_id: None,
             }],

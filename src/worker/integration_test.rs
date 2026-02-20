@@ -49,7 +49,8 @@ mod tests {
                 content: Some(
                     "```json\n{\"summary\": \"Fallback\", \"findings\": []}\n```".to_string(),
                 ),
-                tool_calls: None,
+                thought: None,
+            tool_calls: None,
                 usage: Some(AiUsage {
                     prompt_tokens: 0,
                     completion_tokens: 0,
@@ -81,6 +82,7 @@ mod tests {
     fn create_text_response(text: &str) -> anyhow::Result<AiResponse> {
         Ok(AiResponse {
             content: Some(text.to_string()),
+            thought: None,
             tool_calls: None,
             usage: Some(AiUsage {
                 prompt_tokens: 10,
@@ -97,6 +99,7 @@ mod tests {
     ) -> anyhow::Result<AiResponse> {
         Ok(AiResponse {
             content: None,
+            thought: None,
             tool_calls: Some(vec![ToolCall {
                 id: name.to_string(),
                 function_name: name.to_string(),
