@@ -32,6 +32,7 @@ pub struct Subsystem {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct PatchsetRow {
     pub id: i64,
     pub subject: Option<String>,
@@ -59,6 +60,7 @@ pub struct PatchsetRow {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct MessageRow {
     pub id: i64,
     pub message_id: String,

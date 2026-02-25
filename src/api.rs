@@ -30,11 +30,110 @@ use tokio::sync::mpsc;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info};
 
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
+
+struct CachedValue<T> {
+    value: T,
+    timestamp: Instant,
+}
+
+struct AsyncCache<T> {
+    inner: RwLock<Option<CachedValue<T>>>,
+    ttl: Duration,
+}
+
+impl<T: Clone> AsyncCache<T> {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            inner: RwLock::new(None),
+            ttl,
+        }
+    }
+
+    async fn get_or_fetch<F, Fut, E>(&self, fetch: F) -> Result<T, E>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, E>>,
+    {
+        if let Some(cached) = self.inner.read().await.as_ref() {
+            if cached.timestamp.elapsed() < self.ttl {
+                return Ok(cached.value.clone());
+            }
+        }
+
+        let mut write_guard = self.inner.write().await;
+        if let Some(cached) = write_guard.as_ref() {
+            if cached.timestamp.elapsed() < self.ttl {
+                return Ok(cached.value.clone());
+            }
+        }
+
+        let value = fetch().await?;
+        *write_guard = Some(CachedValue {
+            value: value.clone(),
+            timestamp: Instant::now(),
+        });
+        Ok(value)
+    }
+}
+
+struct AsyncMapCache<K, V> {
+    inner: RwLock<std::collections::HashMap<K, CachedValue<V>>>,
+    ttl: Duration,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V: Clone> AsyncMapCache<K, V> {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            inner: RwLock::new(std::collections::HashMap::new()),
+            ttl,
+        }
+    }
+
+    async fn get_or_fetch<F, Fut, E>(&self, key: K, fetch: F) -> Result<V, E>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<V, E>>,
+    {
+        if let Some(cached) = self.inner.read().await.get(&key) {
+            if cached.timestamp.elapsed() < self.ttl {
+                return Ok(cached.value.clone());
+            }
+        }
+
+        let mut write_guard = self.inner.write().await;
+        if let Some(cached) = write_guard.get(&key) {
+            if cached.timestamp.elapsed() < self.ttl {
+                return Ok(cached.value.clone());
+            }
+        }
+
+        let value = fetch().await?;
+        write_guard.insert(
+            key,
+            CachedValue {
+                value: value.clone(),
+                timestamp: Instant::now(),
+            },
+        );
+        Ok(value)
+    }
+}
+
 pub struct AppState {
     pub db: Arc<Database>,
     pub sender: mpsc::Sender<Event>,
     pub fetch_sender: mpsc::Sender<FetchRequest>,
     pub read_only: bool,
+    stats_cache: AsyncCache<serde_json::Value>,
+    stats_timeline_cache: AsyncMapCache<Option<i64>, serde_json::Value>,
+    stats_reviews_cache: AsyncCache<serde_json::Value>,
+    stats_tools_cache: AsyncCache<serde_json::Value>,
+    messages_count_cache: AsyncCache<usize>,
+    patchsets_count_cache: AsyncCache<usize>,
+    patchsets_homepage_cache: AsyncCache<Vec<crate::db::PatchsetRow>>,
+    messages_homepage_cache: AsyncCache<Vec<crate::db::MessageRow>>,
 }
 
 #[derive(Deserialize)]
@@ -131,6 +230,14 @@ pub async fn run_server(
         sender,
         fetch_sender,
         read_only: settings.read_only,
+        stats_cache: AsyncCache::new(Duration::from_secs(60)),
+        stats_timeline_cache: AsyncMapCache::new(Duration::from_secs(60)),
+        stats_reviews_cache: AsyncCache::new(Duration::from_secs(60)),
+        stats_tools_cache: AsyncCache::new(Duration::from_secs(60)),
+        messages_count_cache: AsyncCache::new(Duration::from_secs(30)),
+        patchsets_count_cache: AsyncCache::new(Duration::from_secs(30)),
+        patchsets_homepage_cache: AsyncCache::new(Duration::from_secs(10)),
+        messages_homepage_cache: AsyncCache::new(Duration::from_secs(10)),
     });
 
     let app = Router::new()
@@ -310,21 +417,35 @@ async fn list_patchsets(
     let per_page = pagination.per_page.unwrap_or(50).clamp(1, 100);
     let offset = (page - 1) * per_page;
 
-    let items = state
-        .db
-        .get_patchsets(
-            per_page,
-            offset,
-            pagination.q.clone(),
-            pagination.mailing_list.clone(),
-        )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let total = state
-        .db
-        .count_patchsets(pagination.q.clone(), pagination.mailing_list.clone())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let items = if pagination.q.is_none() && pagination.mailing_list.is_none() && page == 1 && per_page == 50 {
+        state.patchsets_homepage_cache.get_or_fetch(|| async {
+            state.db.get_patchsets(per_page, offset, None, None).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        }).await?
+    } else {
+        state
+            .db
+            .get_patchsets(per_page, offset, pagination.q.clone(), pagination.mailing_list.clone())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+    let total = if pagination.q.is_none() && pagination.mailing_list.is_none() {
+        state
+            .patchsets_count_cache
+            .get_or_fetch(|| async {
+                state
+                    .db
+                    .count_patchsets(None, None)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            })
+            .await?
+    } else {
+        state
+            .db
+            .count_patchsets(pagination.q.clone(), pagination.mailing_list.clone())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
 
     Ok(Json(PatchsetsResponse {
         items,
@@ -342,21 +463,35 @@ async fn list_messages(
     let per_page = pagination.per_page.unwrap_or(50).clamp(1, 100);
     let offset = (page - 1) * per_page;
 
-    let items = state
-        .db
-        .get_messages(
-            per_page,
-            offset,
-            pagination.q.clone(),
-            pagination.mailing_list.clone(),
-        )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let total = state
-        .db
-        .count_messages(pagination.q.clone(), pagination.mailing_list.clone())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let items = if pagination.q.is_none() && pagination.mailing_list.is_none() && page == 1 && per_page == 50 {
+        state.messages_homepage_cache.get_or_fetch(|| async {
+            state.db.get_messages(per_page, offset, None, None).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        }).await?
+    } else {
+        state
+            .db
+            .get_messages(per_page, offset, pagination.q.clone(), pagination.mailing_list.clone())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+    let total = if pagination.q.is_none() && pagination.mailing_list.is_none() {
+        state
+            .messages_count_cache
+            .get_or_fetch(|| async {
+                state
+                    .db
+                    .count_messages(None, None)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            })
+            .await?
+    } else {
+        state
+            .db
+            .count_messages(pagination.q.clone(), pagination.mailing_list.clone())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
 
     Ok(Json(MessagesResponse {
         items,
@@ -487,38 +622,48 @@ async fn get_message(
     }
 }
 
-async fn get_stats(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let messages = state.db.count_messages(None, None).await.unwrap_or(0);
-    let patchsets = state.db.count_patchsets(None, None).await.unwrap_or(0);
-    let counts = state
-        .db
-        .get_patchset_counts_by_status()
-        .await
-        .unwrap_or_default();
+async fn get_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let val = state
+        .stats_cache
+        .get_or_fetch(|| async {
+            let messages = state.db.count_messages(None, None).await.unwrap_or(0);
+            let patchsets = state.db.count_patchsets(None, None).await.unwrap_or(0);
+            let counts = state
+                .db
+                .get_patchset_counts_by_status()
+                .await
+                .unwrap_or_default();
 
-    let pending = *counts.get("Pending").unwrap_or(&0);
-    let reviewing = *counts.get("In Review").unwrap_or(&0) + *counts.get("Applying").unwrap_or(&0); // Include legacy "Applying" in reviewing count
-    let reviewed = *counts.get("Reviewed").unwrap_or(&0);
-    let failed = *counts.get("Failed").unwrap_or(&0);
-    let failed_to_apply = *counts.get("Failed To Apply").unwrap_or(&0);
-    let incomplete = *counts.get("Incomplete").unwrap_or(&0);
-    let cancelled = *counts.get("Cancelled").unwrap_or(&0);
+            let pending = *counts.get("Pending").unwrap_or(&0);
+            let reviewing =
+                *counts.get("In Review").unwrap_or(&0) + *counts.get("Applying").unwrap_or(&0);
+            let reviewed = *counts.get("Reviewed").unwrap_or(&0);
+            let failed = *counts.get("Failed").unwrap_or(&0);
+            let failed_to_apply = *counts.get("Failed To Apply").unwrap_or(&0);
+            let incomplete = *counts.get("Incomplete").unwrap_or(&0);
+            let cancelled = *counts.get("Cancelled").unwrap_or(&0);
 
-    Json(serde_json::json!({
-        "status": "ok",
-        "version": "0.1.0",
-        "messages": messages,
-        "patchsets": patchsets,
-        "breakdown": {
-            "pending": pending,
-            "reviewing": reviewing,
-            "reviewed": reviewed,
-            "failed": failed,
-            "failed_to_apply": failed_to_apply,
-            "incomplete": incomplete,
-            "cancelled": cancelled
-        }
-    }))
+            Ok::<serde_json::Value, StatusCode>(serde_json::json!({
+                "status": "ok",
+                "version": "0.1.0",
+                "messages": messages,
+                "patchsets": patchsets,
+                "breakdown": {
+                    "pending": pending,
+                    "reviewing": reviewing,
+                    "reviewed": reviewed,
+                    "failed": failed,
+                    "failed_to_apply": failed_to_apply,
+                    "incomplete": incomplete,
+                    "cancelled": cancelled
+                }
+            }))
+        })
+        .await?;
+
+    Ok(Json(val))
 }
 
 async fn stats_timeline(
@@ -526,33 +671,48 @@ async fn stats_timeline(
     Query(params): Query<SubsystemQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let data = state
-        .db
-        .get_timeline_stats(params.subsystem_id)
-        .await
-        .map_err(|e| {
-            info!("Error getting timeline stats: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .stats_timeline_cache
+        .get_or_fetch(params.subsystem_id, || async {
+            state
+                .db
+                .get_timeline_stats(params.subsystem_id)
+                .await
+                .map_err(|e| {
+                    info!("Error getting timeline stats: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })
+        })
+        .await?;
     Ok(Json(data))
 }
 
 async fn stats_reviews(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let data = state.db.get_review_stats().await.map_err(|e| {
-        info!("Error getting review stats: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let data = state
+        .stats_reviews_cache
+        .get_or_fetch(|| async {
+            state.db.get_review_stats().await.map_err(|e| {
+                info!("Error getting review stats: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
+        })
+        .await?;
     Ok(Json(data))
 }
 
 async fn stats_tools(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let data = state.db.get_tool_usage_stats().await.map_err(|e| {
-        info!("Error getting tool stats: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let data = state
+        .stats_tools_cache
+        .get_or_fetch(|| async {
+            state.db.get_tool_usage_stats().await.map_err(|e| {
+                info!("Error getting tool stats: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
+        })
+        .await?;
     Ok(Json(data))
 }
 
