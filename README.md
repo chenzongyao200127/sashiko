@@ -4,7 +4,7 @@
 
 > **Sashiko** (刺し子, literally "little stabs") is a form of decorative reinforcement stitching from Japan. Originally used to reinforce points of wear or to repair worn places or tears with patches, here it represents our mission to reinforce the Linux kernel through automated, intelligent patch review.
 
-Sashiko is an automated system designed to assist in the review of Linux kernel patches. It ingests patches from mailing lists, analyzes them using AI-powered prompts, and provides feedback to help maintainers and developers ensure code quality and adherence to kernel standards.
+Sashiko is an agentic Linux kernel code review system. It uses a set Linux kernel-specific prompts and a special protocol to review proposed Linux kernel changes. Sashiko can ingest patches from mailing lists or local git. It's fully self contained (doesn't use any external agentic cli tools) and can work with various LLM providers.
 
 ## Quality of reviews
 
@@ -153,6 +153,12 @@ If you're changing AI-related parts, please, run at least several code reviews.
 Development got much faster these days, but testing is as important as ever.
 
 ## License
+
+[![Linux Foundation](https://img.shields.io/badge/Linux%20Foundation-Project-blue.svg)](https://www.linuxfoundation.org/)
+
+Copyright The Linux Foundation and its contributors. All rights reserved.
+
+The Linux Foundation has registered trademarks and uses trademarks. For a list of trademarks of The Linux Foundation, please see our [Trademark Usage page](https://www.linuxfoundation.org/trademark-usage/).
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
