@@ -216,12 +216,6 @@
         "problem_description": "A hang occurs during queue reset on gfx11 APUs because the EXEC_COUNT field in the conditional execution packet is not patched during gfx shadow handling."
     },
     {
-        "Commit": "f394576eb11dbcd3a740fa41e577b97f0720d26e",
-        "Fixed-by": "2724138b2f7f6299812b3404e23b124304834759",
-        "subsystem": "iommufd",
-        "problem_description": "batch_clear() does not initialize the 'kind' field of struct pfn_batch, leading to a KMSAN warning about an uninitialized value read in batch_add_pfn_num()."
-    },
-    {
         "Commit": "f0887e2a52d4ef3f246e508bd1d947dc13988643",
         "Fixed-by": "a54afbc8a2138f8c2490510cf26cde188d480c43",
         "subsystem": "nvme",
