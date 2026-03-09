@@ -128,7 +128,6 @@ pub struct Finding {
     pub severity: Severity,
     pub severity_explanation: Option<String>,
     pub problem: String,
-    pub suggestion: Option<String>,
 }
 
 impl Database {
@@ -765,17 +764,18 @@ impl Database {
     }
 
     pub async fn create_finding(&self, finding: Finding) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO findings (review_id, severity, severity_explanation, problem, suggestion)
-             VALUES (?, ?, ?, ?, ?)",
-            libsql::params![
-                finding.review_id,
-                finding.severity as i32,
-                finding.severity_explanation,
-                finding.problem,
-                finding.suggestion,
-            ],
-        ).await?;
+        self.conn
+            .execute(
+                "INSERT INTO findings (review_id, severity, severity_explanation, problem)
+             VALUES (?, ?, ?, ?)",
+                libsql::params![
+                    finding.review_id,
+                    finding.severity as i32,
+                    finding.severity_explanation,
+                    finding.problem,
+                ],
+            )
+            .await?;
         Ok(())
     }
 
@@ -829,7 +829,6 @@ impl Database {
                         .get("severity_explanation")
                         .and_then(|s| s.as_str())
                         .map(|s| s.to_string());
-                    let suggestion = f["suggestion"].as_str().map(|s| s.to_string());
 
                     let severity = Severity::from_str(severity_str);
 
@@ -839,7 +838,6 @@ impl Database {
                             severity,
                             severity_explanation,
                             problem,
-                            suggestion,
                         })
                         .await;
                 }

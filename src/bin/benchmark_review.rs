@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
             async move {
                 let res = process_entry(db, client, entry).await;
                 let current = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
-                if current % 10 == 0 {
+                if current.is_multiple_of(10) {
                     info!("Progress: {}/{}", current, total_entries);
                 }
                 res
@@ -244,7 +244,7 @@ async fn process_entry(
     let findings_result = db
         .conn
         .query(
-            "SELECT problem, suggestion, severity, severity_explanation FROM findings WHERE review_id = ?",
+            "SELECT problem, severity, severity_explanation FROM findings WHERE review_id = ?",
             libsql::params![review_id],
         )
         .await;
@@ -255,16 +255,12 @@ async fn process_entry(
     if let Ok(mut rows) = findings_result {
         while let Ok(Some(row)) = rows.next().await {
             let msg: String = row.get(0).unwrap_or_default();
-            let suggestion: Option<String> = row.get(1).ok();
-            let severity: i32 = row.get(2).unwrap_or(0);
-            let explanation: Option<String> = row.get(3).ok();
+            let severity: i32 = row.get(1).unwrap_or(0);
+            let explanation: Option<String> = row.get(2).ok();
 
             findings_text.push_str(&format!("- [Severity {}] {}\n", severity, msg));
             if let Some(e) = explanation {
                 findings_text.push_str(&format!("  Explanation: {}\n", e));
-            }
-            if let Some(s) = suggestion {
-                findings_text.push_str(&format!("  Suggestion: {}\n", s));
             }
             findings_count += 1;
         }

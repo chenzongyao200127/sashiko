@@ -1169,8 +1169,6 @@ impl Reviewer {
                                         let severity_explanation = f["severity_explanation"]
                                             .as_str()
                                             .map(|s| s.to_string());
-                                        let suggestion =
-                                            f["suggestion"].as_str().map(|s| s.to_string());
 
                                         let _ = ctx
                                             .db
@@ -1179,7 +1177,6 @@ impl Reviewer {
                                                 severity,
                                                 severity_explanation,
                                                 problem,
-                                                suggestion,
                                             })
                                             .await;
                                     }
@@ -1435,7 +1432,14 @@ async fn run_review_tool(
             let mut final_result: Option<Value> = None;
             let mut ai_started = false;
 
-            while let Ok(line_result) = timeout_at(deadline, lines.next_line()).await {
+            loop {
+                let line_result = match timeout_at(deadline, lines.next_line()).await {
+                    Ok(res) => res,
+                    Err(_) => {
+                        return Err(anyhow::anyhow!("Review tool timed out (active time exceeded)"));
+                    }
+                };
+
                 let line = match line_result {
                     Ok(Some(l)) => l,
                     Ok(None) => break,
@@ -2121,13 +2125,13 @@ echo '{"patchset_id": 1, "patches": []}'
                                 retry = true;
                                 let mut guard = acn.lock().await;
                                 let current = req.preloaded_context.clone();
-                                if let Some(active) = guard.as_ref() {
-                                    if current.as_ref() != Some(active) {
-                                        // Already refreshed by another task!
-                                        req.preloaded_context = Some(active.clone());
-                                        drop(guard);
-                                        continue;
-                                    }
+                                if let Some(active) = guard.as_ref()
+                                    && current.as_ref() != Some(active)
+                                {
+                                    // Already refreshed by another task!
+                                    req.preloaded_context = Some(active.clone());
+                                    drop(guard);
+                                    continue;
                                 }
                                 *guard = None;
                                 let new = cm.ensure_cache(current.as_deref()).await?;
