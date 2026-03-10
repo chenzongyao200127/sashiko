@@ -356,6 +356,7 @@ pub struct Worker {
     max_interactions: usize,
     temperature: f32,
     series_range: Option<String>,
+    cache_name: Option<String>,
 }
 
 impl Worker {
@@ -373,6 +374,7 @@ impl Worker {
             max_interactions: config.max_interactions,
             temperature: config.temperature,
             series_range: config.series_range,
+            cache_name: config.cache_name,
         }
     }
 
@@ -525,7 +527,10 @@ Example:
                 match cmd_output {
                     Ok(out) if out.status.success() => {
                         let subjects = String::from_utf8_lossy(&out.stdout).to_string();
-                        format!("Series Range: {}\n\nPatches in series:\n{}", range, subjects)
+                        format!(
+                            "Series Range: {}\n\nPatches in series:\n{}",
+                            range, subjects
+                        )
                     }
                     Ok(out) => {
                         warn!(
@@ -779,7 +784,7 @@ Example:
                 },
                 tools: Some(self.tools.get_declarations_generic()),
                 temperature: Some(self.temperature),
-                preloaded_context: None, // Caching disabled
+                preloaded_context: self.cache_name.clone(),
                 response_format: None,
             };
 
