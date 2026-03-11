@@ -241,9 +241,11 @@ impl GeminiClient {
             match serde_json::from_str::<GenerateContentResponse>(&body_text) {
                 Ok(response) => {
                     if let Some(usage) = &response.usage_metadata {
+                        let cached = usage.cached_content_token_count.unwrap_or(0);
                         tracing::info!(
-                            "Gemini response received. Tokens: in={}, out={}",
-                            usage.prompt_token_count,
+                            "Gemini response received. Tokens: in={}, cached={}, out={}",
+                            usage.prompt_token_count.saturating_sub(cached),
+                            cached,
                             usage.candidates_token_count.unwrap_or(0)
                         );
                     } else {
