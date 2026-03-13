@@ -128,7 +128,6 @@ pub struct Finding {
     pub severity: Severity,
     pub severity_explanation: Option<String>,
     pub problem: String,
-    pub suggestion: Option<String>,
 }
 
 impl Database {
@@ -765,17 +764,18 @@ impl Database {
     }
 
     pub async fn create_finding(&self, finding: Finding) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO findings (review_id, severity, severity_explanation, problem, suggestion)
-             VALUES (?, ?, ?, ?, ?)",
-            libsql::params![
-                finding.review_id,
-                finding.severity as i32,
-                finding.severity_explanation,
-                finding.problem,
-                finding.suggestion,
-            ],
-        ).await?;
+        self.conn
+            .execute(
+                "INSERT INTO findings (review_id, severity, severity_explanation, problem)
+             VALUES (?, ?, ?, ?)",
+                libsql::params![
+                    finding.review_id,
+                    finding.severity as i32,
+                    finding.severity_explanation,
+                    finding.problem,
+                ],
+            )
+            .await?;
         Ok(())
     }
 
@@ -829,7 +829,6 @@ impl Database {
                         .get("severity_explanation")
                         .and_then(|s| s.as_str())
                         .map(|s| s.to_string());
-                    let suggestion = f["suggestion"].as_str().map(|s| s.to_string());
 
                     let severity = Severity::from_str(severity_str);
 
@@ -839,7 +838,6 @@ impl Database {
                             severity,
                             severity_explanation,
                             problem,
-                            suggestion,
                         })
                         .await;
                 }
@@ -2074,23 +2072,15 @@ impl Database {
              LEFT JOIN patchsets_subsystems ps ON p.id = ps.patchset_id
              LEFT JOIN subsystems s ON ps.subsystem_id = s.id
              LEFT JOIN (
-                SELECT patchset_id,
-                    MAX(low) as low,
-                    MAX(medium) as medium,
-                    MAX(high) as high,
-                    MAX(critical) as critical
-                FROM (
-                    SELECT r.patchset_id, r.id,
-                        SUM(CASE WHEN f.severity = 1 THEN 1 ELSE 0 END) as low,
-                        SUM(CASE WHEN f.severity = 2 THEN 1 ELSE 0 END) as medium,
-                        SUM(CASE WHEN f.severity = 3 THEN 1 ELSE 0 END) as high,
-                        SUM(CASE WHEN f.severity = 4 THEN 1 ELSE 0 END) as critical
-                    FROM reviews r
-                    JOIN findings f ON r.id = f.review_id
-                    WHERE r.status = 'Reviewed'
-                    GROUP BY r.id
-                )
-                GROUP BY patchset_id
+                SELECT r.patchset_id,
+                    SUM(CASE WHEN f.severity = 1 THEN 1 ELSE 0 END) as low,
+                    SUM(CASE WHEN f.severity = 2 THEN 1 ELSE 0 END) as medium,
+                    SUM(CASE WHEN f.severity = 3 THEN 1 ELSE 0 END) as high,
+                    SUM(CASE WHEN f.severity = 4 THEN 1 ELSE 0 END) as critical
+                FROM reviews r
+                JOIN findings f ON r.id = f.review_id
+                WHERE r.status = 'Reviewed'
+                GROUP BY r.patchset_id
              ) f ON p.id = f.patchset_id
              {} 
              GROUP BY p.id

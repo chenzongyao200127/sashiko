@@ -106,7 +106,6 @@ impl GitWorktree {
             .env("GIT_COMMITTER_EMAIL", "sashiko@localhost")
             .args(["-c", "safe.bareRepository=all"])
             .arg("am")
-            .arg("--3way")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -146,7 +145,6 @@ impl GitWorktree {
             .current_dir(&self.path)
             .args(["-c", "safe.bareRepository=all"])
             .arg("apply")
-            .arg("--3way")
             .arg("-") // Read from stdin
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -166,7 +164,7 @@ impl GitWorktree {
     pub async fn get_commit_show(&self, hash: &str) -> Result<String> {
         let output = Command::new("git")
             .current_dir(&self.path)
-            .args(["show", hash])
+            .args(["show", "--patch", hash])
             .output()
             .await?;
 
@@ -175,6 +173,23 @@ impl GitWorktree {
         } else {
             Err(anyhow!(
                 "git show failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ))
+        }
+    }
+
+    pub async fn get_commit_message(&self, hash: &str) -> Result<String> {
+        let output = Command::new("git")
+            .current_dir(&self.path)
+            .args(["show", "--no-patch", hash])
+            .output()
+            .await?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            Err(anyhow!(
+                "git show --no-patch failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             ))
         }
