@@ -130,6 +130,21 @@ pub struct Finding {
     pub problem: String,
 }
 
+pub struct EmailOutboxRow {
+    pub id: i64,
+    pub patch_id: i64,
+    pub status: String,
+    pub to_addresses: String,
+    pub cc_addresses: String,
+    pub subject: String,
+    pub in_reply_to: String,
+    pub references_hdr: String,
+    pub body: String,
+    pub locked_at: Option<i64>,
+    pub error_log: Option<String>,
+    pub created_at: i64,
+}
+
 impl Database {
     pub async fn get_oldest_message_timestamp(&self) -> Result<Option<i64>> {
         let mut rows = self
@@ -2235,12 +2250,12 @@ impl Database {
         let mut rows = self
             .conn
             .query(
-                "SELECT p.id, p.subject, p.status, p.to_recipients, p.cc_recipients, 
+                "SELECT p.id, p.subject, p.status, p.to_recipients, p.cc_recipients,
                     p.author, p.date, p.cover_letter_message_id, p.thread_id,
                     p.total_parts, p.received_parts, p.failed_reason,
                     p.model_name, p.prompts_git_hash, p.baseline_logs, p.baseline_id, p.provider
-             FROM patchsets p 
-             WHERE p.id = ?",
+                FROM patchsets p
+                WHERE p.id = ?",
                 libsql::params![id],
             )
             .await?;
@@ -2263,7 +2278,6 @@ impl Database {
             let baseline_logs: Option<String> = row.get(14).ok();
             let baseline_id: Option<i64> = row.get(15).ok();
             let provider: Option<String> = row.get(16).ok();
-
             // Fetch baseline details if needed
             let baseline = if let Some(bid) = baseline_id {
                 let mut browse = self
@@ -2325,9 +2339,11 @@ impl Database {
             let mut patch_rows = self
                 .conn
                 .query(
-                    "SELECT p.id, p.message_id, p.part_index, m.id, m.subject, p.status, p.apply_error 
+                    "SELECT p.id, p.message_id, p.part_index, m.id, m.subject, p.status, p.apply_error, 
+                            eo.status as email_status, eo.to_addresses, eo.cc_addresses
                  FROM patches p
                  LEFT JOIN messages m ON p.message_id = m.message_id
+                 LEFT JOIN email_outbox eo ON eo.patch_id = p.id
                  WHERE p.patchset_id = ? 
                  ORDER BY p.part_index ASC
                  LIMIT ? OFFSET ?",
@@ -2345,6 +2361,9 @@ impl Database {
                     "subject": p.get::<Option<String>>(4).ok(),
                     "status": p.get::<Option<String>>(5).ok(),
                     "apply_error": p.get::<Option<String>>(6).ok(),
+                    "email_status": p.get::<Option<String>>(7).ok(),
+                    "email_to": p.get::<Option<String>>(8).ok(),
+                    "email_cc": p.get::<Option<String>>(9).ok(),
                 }));
             }
 
@@ -2783,6 +2802,115 @@ impl Database {
             counts.insert(status_key, count as usize);
         }
         Ok(counts)
+    }
+}
+
+impl Database {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_email_outbox(
+        &self,
+        patch_id: i64,
+        status: &str,
+        to_addresses: &str,
+        cc_addresses: &str,
+        subject: &str,
+        in_reply_to: &str,
+        references_hdr: &str,
+        body: &str,
+    ) -> Result<()> {
+        let created_at = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT INTO email_outbox (patch_id, status, to_addresses, cc_addresses, subject, in_reply_to, references_hdr, body, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            libsql::params![
+                patch_id,
+                status,
+                to_addresses,
+                cc_addresses,
+                subject,
+                in_reply_to,
+                references_hdr,
+                body,
+                created_at,
+            ],
+        ).await?;
+        Ok(())
+    }
+
+    pub async fn lock_pending_email(&self) -> Result<Option<EmailOutboxRow>> {
+        self.begin_transaction().await?;
+        let mut rows = self.conn.query(
+            "SELECT id, patch_id, status, to_addresses, cc_addresses, subject, in_reply_to, references_hdr, body, locked_at, error_log, created_at
+             FROM email_outbox WHERE status = 'Pending' LIMIT 1",
+            ()
+        ).await?;
+
+        let row = if let Ok(Some(row)) = rows.next().await {
+            let id: i64 = row.get(0)?;
+            let patch_id: i64 = row.get(1)?;
+            let status: String = row.get(2)?;
+            let to_addresses: String = row.get(3)?;
+            let cc_addresses: String = row.get(4)?;
+            let subject: String = row.get(5)?;
+            let in_reply_to: String = row.get(6)?;
+            let references_hdr: String = row.get(7)?;
+            let body: String = row.get(8)?;
+            let locked_at: Option<i64> = row.get(9).ok();
+            let error_log: Option<String> = row.get(10).ok();
+            let created_at: i64 = row.get(11)?;
+
+            let now = chrono::Utc::now().timestamp();
+            self.conn
+                .execute(
+                    "UPDATE email_outbox SET status = 'Sending', locked_at = ? WHERE id = ?",
+                    libsql::params![now, id],
+                )
+                .await?;
+
+            Some(EmailOutboxRow {
+                id,
+                patch_id,
+                status,
+                to_addresses,
+                cc_addresses,
+                subject,
+                in_reply_to,
+                references_hdr,
+                body,
+                locked_at,
+                error_log,
+                created_at,
+            })
+        } else {
+            None
+        };
+
+        self.commit_transaction().await?;
+        Ok(row)
+    }
+
+    pub async fn mark_email_sent(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE email_outbox SET status = 'Sent', locked_at = NULL WHERE id = ?",
+                libsql::params![id],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn mark_email_failed(&self, id: i64, error_log: &str) -> Result<()> {
+        self.conn.execute("UPDATE email_outbox SET status = 'Failed', error_log = ?, locked_at = NULL WHERE id = ?", libsql::params![error_log.to_string(), id]).await?;
+        Ok(())
+    }
+
+    pub async fn sweep_ghost_emails(&self) -> Result<u64> {
+        let ten_mins_ago = chrono::Utc::now().timestamp() - 600;
+        let count = self.conn.execute(
+            "UPDATE email_outbox SET status = 'Pending', locked_at = NULL WHERE status = 'Sending' AND locked_at < ?",
+            libsql::params![ten_mins_ago]
+        ).await?;
+        Ok(count)
     }
 }
 

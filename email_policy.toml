@@ -1,0 +1,30 @@
+[defaults]
+# Whether the bot is allowed to send emails to public mailing lists.
+# If false, emails will be restricted to private recipients (author/maintainers).
+reply_all = false
+
+# Whether to send the review email to the author of the patch.
+reply_to_author = false
+
+# Whether to include other maintainers/CCs in the review email.
+cc_maintainers = false
+
+# If true, the bot will completely mute (not send) emails for this scope.
+mute_all = false
+
+# A list of static email addresses that should always receive a copy (CC'd).
+cc = []
+
+# ==============================================================================
+# Subsystem overrides example
+# ==============================================================================
+# [subsystems.example]
+# # The mailing list addresses that identify this subsystem
+# lists = ["example-list@vger.kernel.org"]
+# 
+# # Override defaults for this subsystem
+# reply_all = true
+# reply_to_author = true
+# cc_maintainers = true
+# mute_all = false
+# cc = ["archive-bot@example.com"]

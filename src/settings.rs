@@ -31,6 +31,22 @@ pub struct NntpSettings {
 
 #[derive(Debug, Deserialize, Clone)]
 #[allow(unused)]
+pub struct SmtpSettings {
+    pub server: String,
+    pub port: u16,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub sender_address: String,
+    #[serde(default = "default_dry_run")]
+    pub dry_run: bool,
+}
+
+fn default_dry_run() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[allow(unused)]
 pub struct MailingListsSettings {
     #[serde(deserialize_with = "deserialize_string_or_vec")]
     pub track: Vec<String>,
@@ -205,6 +221,7 @@ pub struct Settings {
     pub log_level: String,
     pub database: DatabaseSettings,
     pub nntp: NntpSettings,
+    pub smtp: Option<SmtpSettings>,
     pub mailing_lists: MailingListsSettings,
     pub ai: AiSettings,
     pub server: ServerSettings,

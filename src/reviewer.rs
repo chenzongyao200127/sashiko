@@ -17,6 +17,8 @@ use crate::ai::quota::QuotaManager;
 use crate::ai::{AiProvider, AiRequest, create_provider};
 use crate::baseline::{BaselineRegistry, BaselineResolution, extract_files_from_diff};
 use crate::db::{AiInteractionParams, Database, Finding, PatchsetRow, Severity, ToolUsage};
+use crate::email_policy::EmailPolicyConfig;
+use crate::email_router::{Action as EmailAction, EmailRouter};
 use crate::git_ops::{GitWorktree, ensure_remote, get_commit_hash};
 use crate::settings::Settings;
 use crate::utils::redact_secret;
@@ -1131,7 +1133,10 @@ impl Reviewer {
 
                                 let inline_review = json_output["inline_review"].as_str();
 
-                                let _ = ctx
+                                let _ = ctx.db.begin_transaction().await;
+                                let mut db_success = true;
+
+                                if let Err(e) = ctx
                                     .db
                                     .complete_review(
                                         review_id,
@@ -1142,7 +1147,31 @@ impl Reviewer {
                                         inline_review,
                                         logs_str.as_deref(),
                                     )
-                                    .await;
+                                    .await
+                                {
+                                    error!("Failed to save review completion: {}", e);
+                                    db_success = false;
+                                }
+
+                                if db_success
+                                    && let Some(inline) = inline_review
+                                    && let Err(e) = Self::queue_email(
+                                        ctx,
+                                        patch_id,
+                                        input_payload,
+                                        index,
+                                        inline,
+                                    )
+                                    .await
+                                {
+                                    error!("Failed to queue email for patch {}: {}", patch_id, e);
+                                    db_success = false;
+                                }
+                                if db_success {
+                                    let _ = ctx.db.commit_transaction().await;
+                                } else {
+                                    let _ = ctx.db.conn.execute("ROLLBACK", ()).await;
+                                }
                                 return Ok(PatchResult::Success);
                             } else if ctx.settings.ai.no_ai {
                                 info!(
@@ -1626,6 +1655,120 @@ async fn run_review_tool(
                 Err(e)
             }
         }
+    }
+}
+impl Reviewer {
+    async fn queue_email(
+        ctx: &ReviewContext,
+        patch_id: i64,
+        input_payload: &Value,
+        index: i64,
+        inline_review: &str,
+    ) -> Result<()> {
+        let sender_address = match &ctx.settings.smtp {
+            Some(s) => s.sender_address.clone(),
+            None => {
+                info!("SMTP not configured, recording email as disabled.");
+                "sashiko-bot@localhost".to_string()
+            }
+        };
+
+        let patch_obj = input_payload["patches"]
+            .as_array()
+            .and_then(|arr| arr.iter().find(|p| p["index"] == index));
+
+        let msg_id = match patch_obj.and_then(|p| p["message_id"].as_str()) {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+
+        let msg_details = match ctx.db.get_message_details_by_msgid(msg_id).await? {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+
+        let policy =
+            EmailPolicyConfig::load("email_policy.toml").unwrap_or_else(|_| EmailPolicyConfig {
+                defaults: Default::default(),
+                subsystems: Default::default(),
+            });
+
+        let to_list: Vec<String> = msg_details
+            .to
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let cc_list: Vec<String> = msg_details
+            .cc
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let patch_author = msg_details.author.unwrap_or_default();
+        let patch_subject = msg_details.subject.unwrap_or_default();
+
+        let action = EmailRouter::resolve_recipients(
+            &policy,
+            &to_list,
+            &cc_list,
+            &patch_author,
+            &sender_address,
+        );
+
+        match action {
+            EmailAction::Mute => {
+                info!("Email policy muted email for patch {}", patch_id);
+            }
+            EmailAction::Send { to, cc } => {
+                let to_json = serde_json::to_string(&to)?;
+                let cc_json = serde_json::to_string(&cc)?;
+
+                let subject_prefix = if patch_subject.to_lowercase().starts_with("re:") {
+                    ""
+                } else {
+                    "Re: "
+                };
+                let final_subject = format!("{}{}", subject_prefix, patch_subject);
+
+                let footer = format!(
+                    "\n\n-- \n\
+                    Sashiko AI review. Please fix the issues or reply to explain why they are incorrect.\n\
+                    If this review was helpful, please consider adding:\n\
+                    Assisted-by: Sashiko ({})\n\n\
+                    View online: https://sashiko.dev/patch/{}",
+                    ctx.settings.ai.model, patch_id
+                );
+
+                let final_body = format!("{}{}", inline_review, footer);
+                let msg_id_clean = msg_id.trim_matches(|c| c == '<' || c == '>');
+
+                let status = match &ctx.settings.smtp {
+                    None => "Disabled",
+                    Some(s) if s.dry_run => "Dry-Run",
+                    _ => "Pending",
+                };
+
+                ctx.db
+                    .insert_email_outbox(
+                        patch_id,
+                        status,
+                        &to_json,
+                        &cc_json,
+                        &final_subject,
+                        msg_id_clean,
+                        msg_id_clean,
+                        &final_body,
+                    )
+                    .await?;
+
+                info!("Queued email for patch {}", patch_id);
+            }
+        }
+        Ok(())
     }
 }
 

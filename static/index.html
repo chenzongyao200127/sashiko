@@ -1150,6 +1150,10 @@
                 
                 // Flush remaining buffer (trailing empty lines)
                 if (buffer.length > 0) {
+                     // Don't render trailing blank lines that bloat the end of the block
+                     while (buffer.length > 0 && buffer[buffer.length - 1].line.trim() === '') {
+                         buffer.pop();
+                     }
                      buffer.forEach(b => {
                         resultHtml += `<div class="${b.cls}">${b.line}</div>`;
                     });
@@ -1590,9 +1594,9 @@
             }
 
             let reviewsHtml = '';
-            const renderReviewList = (reviews) => {
-                if (!reviews || reviews.length === 0) return '<p style="font-style:italic; color:#888;">No reviews yet.</p>';
-                return reviews.map(r => renderReviewCard(r)).join('');
+            const renderReviewList = (reviews, emailHtml = '') => {
+                if (!reviews || reviews.length === 0) return `<p style="font-style:italic; color:#888;">No reviews yet.</p>`;
+                return reviews.map((r, i) => renderReviewCard(r, i === reviews.length - 1 ? emailHtml : '')).join('');
             };
 
             const generalReviews = reviewsByPatch.get(null) || [];
@@ -1630,14 +1634,40 @@
                      statusHtml = `<div style="background:var(--error-bg); border:1px solid var(--error-border); color:var(--error-text); padding:8px; border-radius:4px; margin-bottom:8px; font-family:monospace; white-space:pre-wrap; font-size:0.9em;"><strong>Patch Application Failed:</strong>\n${escapeHtml(patch.apply_error || 'Unknown error')}</div>`;
                 }
 
+                let emailHtml = '';
+                if (patch) {
+                    let toAddrs = patch.email_to || '';
+                    let ccAddrs = patch.email_cc || '';
+                    let eStatus = patch.email_status;
+
+                    if (!data.smtp_enabled) {
+                        eStatus = 'Disabled (SMTP not configured)';
+                    } else if (data.dry_run) {
+                        eStatus = eStatus ? `Dry-run (${eStatus})` : 'Dry-run (Not sent)';
+                    } else {
+                        eStatus = eStatus || 'None';
+                    }
+
+                    try { if (toAddrs.startsWith('[')) toAddrs = JSON.parse(toAddrs).join(', '); } catch(e) {}
+                    try { if (ccAddrs.startsWith('[')) ccAddrs = JSON.parse(ccAddrs).join(', '); } catch(e) {}
+
+                    emailHtml = `
+                        <div style="font-size: 0.9em; color: var(--text-muted); line-height: 1.4; word-break: break-all;">
+                            <strong>To:</strong> ${escapeHtml(toAddrs || 'None')} &nbsp;&nbsp; 
+                            <strong>Cc:</strong> ${escapeHtml(ccAddrs || 'None')} &nbsp;&nbsp; 
+                            <strong>Status:</strong> ${escapeHtml(eStatus)}
+                        </div>
+                    `;
+                }
+
                 let listHtml = '';
                 if (patch && patch.status === 'Skipped') {
-                    listHtml = '<p style="font-style:italic; color:#888;">Skipped.</p>';
+                    listHtml = `<p style="font-style:italic; color:#888;">Skipped.</p>`;
                 } else if (reviews && reviews.length > 0 && reviews.every(r => r.status === 'Skipped')) {
                     const reason = reviews[0].result || 'Skipped.';
                     listHtml = `<p style="font-style:italic; color:#888;">${escapeHtml(reason)}</p>`;
                 } else {
-                    listHtml = renderReviewList(reviews);
+                    listHtml = renderReviewList(reviews, emailHtml);
                 }
 
                 reviewsHtml += `
@@ -1924,7 +1954,7 @@
             `;
         }
 
-        function renderReviewCard(r) {
+        function renderReviewCard(r, emailHtml = '') {
             const uniqueId = Math.random().toString(36).substr(2, 9);
 
             let displayResult = '';
@@ -1982,11 +2012,10 @@
                 }
             }
 
-            const tokensIn = (r.tokens_in || 0);
             const tokensOut = (r.tokens_out || 0);
             const tokensCached = (r.tokens_cached || 0);
-            const cachedPct = tokensIn > 0 ? Math.round((tokensCached / tokensIn) * 100) : 0;
-            const tokenStr = `In: ${tokensIn.toLocaleString()} (${cachedPct}% cached) · Out: ${tokensOut.toLocaleString()}`;
+            const tokensIn = Math.max(0, (r.tokens_in || 0) - tokensCached);
+            const tokenStr = `In: ${tokensIn.toLocaleString()} &middot; Cached: ${tokensCached.toLocaleString()} &middot; Out: ${tokensOut.toLocaleString()}`;
 
             let inlineHtml = '';
             if (r.inline_review) {
@@ -2018,7 +2047,6 @@
                             <span>${displayResult}</span>
                             <span class="status-badge status-${statusRaw.split(' ')[0]}">${statusRaw}</span>
                         </div>
-                        <div class="review-meta-label">Tokens used:</div><div>${tokenStr}</div>
                         ` : `
                         <div class="review-meta-label">Status:</div>
                         <div><span class="status-badge status-${statusRaw.split(' ')[0]}">${statusRaw}</span></div>
@@ -2026,8 +2054,14 @@
                     </div>
                     ${showDetails ? `
                     ${inlineHtml}
+                    <div style="margin-top: 12px; margin-bottom: 0;">
+                        ${emailHtml}
+                        <div style="font-size: 0.9em; color: var(--text-muted); line-height: 1.4; margin-top: 2px;">
+                            <strong>Tokens used:</strong> ${tokenStr}
+                        </div>
+                    </div>
                     <div style="margin-top:8px; display:flex; justify-content:space-between; align-items:center; font-size: 0.9em;">
-                        ${r.id ? `<a href="#/log/${r.id}" style="font-weight:600; color:#666; text-decoration:none;" onmouseover="this.style.color='#007bff'" onmouseout="this.style.color='#666'">View Raw Log</a>` : '<span></span>'}
+                        ${r.id ? `<a href="#/log/${r.id}" style="font-weight:600; color:var(--text-dim); text-decoration:none;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">View Raw Log</a>` : '<span></span>'}
                         <a href="javascript:void(0)" onclick="document.getElementById('ai-reviews').scrollIntoView({behavior: 'smooth'})" style="font-size: 0.95em; color: var(--text-dim); text-decoration: none;">↑ Back to Summary</a>
                     </div>
                     ` : ''}

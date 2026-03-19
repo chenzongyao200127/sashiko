@@ -127,6 +127,8 @@ pub struct AppState {
     pub fetch_sender: mpsc::Sender<FetchRequest>,
     pub read_only: bool,
     pub allow_all_submit: bool,
+    pub smtp_enabled: bool,
+    pub dry_run: bool,
     stats_cache: AsyncCache<serde_json::Value>,
     stats_timeline_cache: AsyncMapCache<Option<i64>, serde_json::Value>,
     stats_reviews_cache: AsyncCache<serde_json::Value>,
@@ -228,6 +230,8 @@ pub async fn run_server(
     sender: mpsc::Sender<Event>,
     fetch_sender: mpsc::Sender<FetchRequest>,
     allow_all_submit: bool,
+    smtp_enabled: bool,
+    dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(AppState {
         db,
@@ -235,6 +239,8 @@ pub async fn run_server(
         fetch_sender,
         read_only: settings.read_only,
         allow_all_submit,
+        smtp_enabled,
+        dry_run,
         stats_cache: AsyncCache::new(Duration::from_secs(60)),
         stats_timeline_cache: AsyncMapCache::new(Duration::from_secs(60)),
         stats_reviews_cache: AsyncCache::new(Duration::from_secs(60)),
@@ -557,7 +563,19 @@ async fn get_patchset(
     };
 
     match result {
-        Ok(Some(details)) => Ok(Json(details)),
+        Ok(Some(mut details)) => {
+            if let Some(obj) = details.as_object_mut() {
+                obj.insert(
+                    "smtp_enabled".to_string(),
+                    serde_json::Value::Bool(state.smtp_enabled),
+                );
+                obj.insert(
+                    "dry_run".to_string(),
+                    serde_json::Value::Bool(state.dry_run),
+                );
+            }
+            Ok(Json(details))
+        }
         Ok(None) => {
             info!("Patchset not found: {}", query.id);
             Err(StatusCode::NOT_FOUND)
