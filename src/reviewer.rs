@@ -744,8 +744,8 @@ impl Reviewer {
                         applied = true;
                     } else {
                         // Fallback raw diff
-                        if let Ok(o) = worktree.apply_raw_diff(diff).await
-                            && o.status.success()
+                        if let Ok(output) = worktree.apply_raw_diff(diff).await
+                            && output.status.success()
                         {
                             applied = true;
                             // Commit raw diff
