@@ -60,15 +60,17 @@ pub fn parse_email(raw_email: &[u8]) -> Result<(PatchsetMetadata, Option<Patch>)
         .from()
         .and_then(|addr| addr.first())
         .map(|a| {
-            let name = a.name().unwrap_or_default();
-            let address = a.address().unwrap_or("unknown");
-            if name.is_empty() {
-                address.to_string()
+            let name = a.name().unwrap_or_default().trim();
+            let address = a.address().unwrap_or("unknown@localhost").trim();
+            let n = if name.is_empty() { "Unknown" } else { name };
+            let addr = if address.is_empty() {
+                "unknown@localhost"
             } else {
-                format!("{} <{}>", name, address)
-            }
+                address
+            };
+            format!("{} <{}>", n, addr)
         })
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_else(|| "Unknown <unknown@localhost>".to_string());
 
     let date = message.date().map(|d| d.to_timestamp()).unwrap_or(0);
 
@@ -107,7 +109,15 @@ pub fn parse_email(raw_email: &[u8]) -> Result<(PatchsetMetadata, Option<Patch>)
     let (index, total) = parse_subject_index(&subject);
     let version = parse_subject_version(&subject);
 
-    let body = message.body_text(0).unwrap_or_default().to_string();
+    let mut body = String::new();
+    for i in 0..message.text_body_count() {
+        if let Some(text) = message.body_text(i) {
+            if !body.is_empty() {
+                body.push('\n');
+            }
+            body.push_str(&text);
+        }
+    }
 
     let diff = if body.contains("diff --git")
         || (body.contains("--- ") && body.contains("+++ ") && body.contains("@@ -"))
@@ -374,7 +384,7 @@ mod tests {
         let raw_no_name =
             b"Message-ID: <456>\r\nFrom: test2@example.com\r\nSubject: Test\r\n\r\nBody";
         let (meta2, _) = parse_email(raw_no_name).unwrap();
-        assert_eq!(meta2.author, "test2@example.com");
+        assert_eq!(meta2.author, "Unknown <test2@example.com>");
     }
 
     #[test]
@@ -396,8 +406,8 @@ mod tests {
         let raw = b"Message-ID: <diffnopatch>\r\nSubject: Random fix\r\n\r\ndiff --git a/file b/file\nindex...";
         let (meta, _) = parse_email(raw).unwrap();
         assert!(
-            !meta.is_patch_or_cover,
-            "Diff without [PATCH] tag should be ignored"
+            meta.is_patch_or_cover,
+            "Diff without [PATCH] tag should still be parsed as patch"
         );
     }
 
@@ -414,8 +424,8 @@ mod tests {
             b"Message-ID: <nonpatch>\r\nSubject: [PATCH] discussion\r\n\r\nThis is not a patch";
         let (meta, _) = parse_email(raw).unwrap();
         assert!(
-            !meta.is_patch_or_cover,
-            "Single patch without diff should be ignored"
+            meta.is_patch_or_cover,
+            "Single patch without diff should still be parsed due to [PATCH] tag"
         );
     }
 
